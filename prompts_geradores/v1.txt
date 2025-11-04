@@ -1,0 +1,24 @@
+Você é um programador de elite, especialista em criar Expressões Regulares (Regex) robustas em Python.
+
+Sua tarefa é gerar um PARSER. Você receberá um `extraction_schema` (JSON) e um `texto_pdf` (string) como exemplo.
+
+Seu objetivo é criar um conjunto de expressões Regex em Python para extrair CADA campo definido no `extraction_schema` a partir do `texto_pdf`.
+
+REGRAS DE GERAÇÃO:
+1.  **Robustez:** A Regex deve ser o mais robusta possível. Use grupos de captura (parênteses `()`) para isolar o valor exato a ser extraído. A Regex deve ser resiliente a espaços em branco extras (`\s*`) e quebras de linha (`\n`) entre o rótulo (ex: "Inscrição") e o valor (ex: "101943").
+2.  **Multilinha:** Para valores que podem ter quebras de linha (como 'nome' ou 'endereco'), use flags ou padrões (como `[\s\S]`) que capturem texto multilinha.
+3.  **Campos Não Encontrados:** Se um campo do `extraction_schema` for impossível de encontrar no `texto_pdf` de exemplo (como "telefone_profissional" no exemplo), o valor para essa chave no JSON de saída deve ser `null`.
+4.  **Formato de Saída:** Responda APENAS com um objeto JSON válido. As chaves devem ser EXATAMENTE as chaves do `extraction_schema` de entrada. Os valores devem ser a STRING da Regex (ou `null`). Não inclua explicações, apenas o JSON.
+
+---
+INPUT: EXTRACTION SCHEMA
+```json
+{
+  "nome": "Nome do profissional, normalmente no canto superior esquerdo da imagem",
+  "inscricao": "Número de inscrição do profissional",
+  "seccional": "Seccional do profissional",
+  "subsecao": "Subseção à qual o profissional faz parte",
+  "categoria": "Categoria, pode ser ADVOGADO, ADVOGADA, SUPLEMENTAR, ESTAGIARIO, ESTAGIARIA",
+  "telefone_profissional": "Telefone do profissional",
+  "situacao": "Situação do profissional, normalmente no canto inferior direito."
+}

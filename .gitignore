@@ -1,0 +1,11 @@
+# Arquivos de ambiente
+.env
+
+# Diretórios de cache e ambiente virtual
+.venv/
+pdf_extractor/
+parser_repository_cache/
+
+# Arquivos de cache do Python
+__pycache__/
+*.pyc
