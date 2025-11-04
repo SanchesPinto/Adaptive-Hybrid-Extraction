@@ -1,112 +1,132 @@
 import logging
 import json 
-import os # Importado para limpar o cache nos testes
+import os
+import threading # <-- 1. Importamos o módulo de threading
 
 # --- Importando todos os nossos Módulos ---
 from parser_repository import ParserRepository
-from parser_generator import ParserGenerator         # Módulo 1
-from parser_executor import ParserExecutor           # Módulo 2
-from confidence_calculator import ConfidenceCalculator # Módulo 3
-from fallback_extractor import FallbackExtractor     # Módulo de Fallback (Camada 2)
+from parser_generator import ParserGenerator         # Módulo 1 (Lento)
+from parser_executor import ParserExecutor           # Módulo 2 (Rápido)
+from confidence_calculator import ConfidenceCalculator # Módulo 3 (Rápido)
+from fallback_extractor import FallbackExtractor     # Módulo de Fallback (Rápido)
 
 # Configuração inicial de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Este é o nosso "Gatilho de Fallback".
-# Alinhado com o requisito de 80% de acurácia [cite: 362]
-MIN_CONFIDENCE_THRESHOLD = 1.0 
+# (Você pode reverter isso para 0.8 após o teste)
+MIN_CONFIDENCE_THRESHOLD = 0.8 
 
 def processar_extracao(label: str, schema: dict, pdf_text: str):
     """
-    Função principal do Orquestrador (Módulo 4), agora completa
-    com a lógica de fallback (Camada 2).
-    
-    Implementa a "Arquitetura Híbrida Sintética" (Alternativa 3).
+    Função principal do Orquestrador (Módulo 4), agora com
+    lógica de "lock" V2.1 para evitar "race conditions".
     """
-    logging.info(f"Iniciando processamento para o label: {label}")
+    logging.info(f"Iniciando processamento (V2.1 Lock) para o label: {label}")
     
     repo = ParserRepository()
     parser = repo.get_parser(label)
-    extracted_data = {}
-    
-    # Inicializa o Fallback Extractor para ser usado em caso de falha
-    fallback = FallbackExtractor()
 
-    if not parser:
-        # --- Cenário B (Cache Miss) ---
-        logging.info(f"CACHE MISS para {label}. Acionando Módulo 1 (Gerador)...")
-        generator = ParserGenerator()
-        parser = generator.generate_parser(schema, pdf_text)
+    if parser:
+        # --- CAMINHO 1: CACHE HIT (O "Caminho Rápido") ---
+        # (Esta lógica está perfeita. Nenhuma mudança aqui.)
+        logging.info("CACHE HIT. Acionando Módulo 2 (Executor)...")
+        executor = ParserExecutor()
+        extracted_data = executor.execute_parser(parser, pdf_text)
         
-        if parser:
-            # Geração foi um SUCESSO
-            repo.save_parser(label, parser)
-            logging.info(f"Novo parser para {label} gerado e salvo.")
+        logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2) ---")
+        logging.info(json.dumps(extracted_data, indent=2, ensure_ascii=False))
+        
+        calculator = ConfidenceCalculator()
+        confidence = calculator.calculate_confidence(extracted_data, schema)
+        
+        if confidence >= MIN_CONFIDENCE_THRESHOLD:
+            logging.info(f"Confiança Alta ({confidence:.2f} >= {MIN_CONFIDENCE_THRESHOLD}). Retornando dados do Módulo 2.")
+            return extracted_data
         else:
-            # FALHA NA GERAÇÃO: Aciona o fallback para extração completa
-            logging.error(f"Falha ao gerar parser para {label}. Acionando Fallback Direto (Modo 1).")
-            extracted_data = fallback.extract_all(schema, pdf_text)
+            # (Lógica de Fallback Otimizado V2 permanece a mesma)
+            logging.warning(f"Confiança Baixa ({confidence:.2f} < {MIN_CONFIDENCE_THRESHOLD}). Acionando Fallback Otimizado (Modo 2)...")
+            fallback = FallbackExtractor()
+            campos_faltantes = {
+                k: v for k, v in schema.items() 
+                if k not in extracted_data or not extracted_data[k]
+            }
+            if not campos_faltantes:
+                 return extracted_data # Retorna o melhor que temos
+
+            fallback_data = fallback.extract_missing(campos_faltantes, pdf_text, extracted_data)
             
-            if not extracted_data:
-                logging.critical(f"FALHA CRÍTICA: Geração do Parser e Fallback falharam.")
-                return {"error": "Falha crítica na geração do parser E no fallback."}
-            
-            logging.info("Fallback (Modo 1) concluído. Retornando dados.")
-            return extracted_data # Retorna dados do fallback
+            if fallback_data:
+                final_data = extracted_data.copy(); final_data.update(fallback_data)
+                return final_data
+            else:
+                return extracted_data
     
-    # --- Cenário A (Cache Hit ou Geração Bem-Sucedida) ---
-    logging.info(f"Parser para {label} está pronto. Acionando Módulo 2 (Executor)...")
-    
-    executor = ParserExecutor()
-    extracted_data = executor.execute_parser(parser, pdf_text)
-    
-    logging.info("--- DADOS EXTRAÍDOS (Resultado do Módulo 2) ---")
-    logging.info(json.dumps(extracted_data, indent=2, ensure_ascii=False))
-    logging.info("-------------------------------------------------")
-    
-    # --- Módulo 3 (Confiança) ---
-    calculator = ConfidenceCalculator()
-    confidence = calculator.calculate_confidence(extracted_data, schema)
-    
-    # --- Lógica de Gatilho (Decisão) ---
-    if confidence >= MIN_CONFIDENCE_THRESHOLD:
-        logging.info(f"Confiança Alta ({confidence:.2f} >= {MIN_CONFIDENCE_THRESHOLD}). Retornando dados do Módulo 2.")
-        return extracted_data
     else:
-        # BAIXA CONFIANÇA: Aciona o fallback para campos FALTANTES (Modo 2)
-        logging.warning(f"Confiança Baixa ({confidence:.2f} < {MIN_CONFIDENCE_THRESHOLD}). Acionando Fallback Otimizado (Modo 2)...")
+        # --- CAMINHO 2: CACHE MISS (V2.1 com Lock) ---
+        # Esta é a lógica refatorada.
         
-        # Calcula os campos que o Módulo 2 não conseguiu encontrar
-        campos_faltantes = {
-            k: v for k, v in schema.items() 
-            if k not in extracted_data or not extracted_data[k]
-        }
-        
-        if not campos_faltantes:
-             logging.error("Confiança baixa, mas não há campos faltantes? (Erro de lógica). Retornando dados parciais.")
-             return extracted_data
+        logging.warning(f"CACHE MISS para {label}. Verificando lock de geração...")
 
-        # Chama o fallback (Modo 2) apenas para os campos faltantes
-        fallback_data = fallback.extract_missing(campos_faltantes, pdf_text, extracted_data)
-        
-        if fallback_data:
-            # Combina os dados (Módulo 2 + Fallback)
-            final_data = extracted_data.copy()
-            final_data.update(fallback_data)
-            logging.info("Fallback (Modo 2) concluído. Retornando dados combinados.")
-            return final_data
+        # 1. VERIFICAR O LOCK
+        if repo.is_generation_locked(label):
+            # Geração já está em progresso. Pular a thread.
+            logging.warning(f"Geração para '{label}' já em progresso (lock encontrado). Pulando criação de nova thread.")
         else:
-            logging.error("Fallback (Modo 2) falhou. Retornando dados parciais do Módulo 2 (melhor esforço).")
-            return extracted_data # Retorna o melhor que temos
+            # Ninguém está gerando. Vamos criar o lock e disparar a thread.
+            logging.info(f"Lock não encontrado. Criando lock e disparando thread de geração...")
+            
+            # 2. CRIAR O LOCK
+            repo.create_lock(label) 
 
-# --- SIMULAÇÃO DE FLUXO (Pronto para Testar) ---
+            # 3. TAREFA ASSÍNCRONA (Background)
+            def _run_parser_generation_task():
+                # Instancia novas classes dentro da thread para segurança
+                task_repo = ParserRepository()
+                task_generator = ParserGenerator()
+                try:
+                    logging.info(f"[BACKGROUND] TAREFA INICIADA: Gerando parser para '{label}'...")
+                    new_parser = task_generator.generate_parser(schema, pdf_text)
+                    
+                    if new_parser:
+                        task_repo.save_parser(label, new_parser)
+                        logging.info(f"[BACKGROUND] TAREFA CONCLUÍDA: Novo parser para '{label}' salvo.")
+                    else:
+                        logging.error(f"[BACKGROUND] TAREFA FALHOU: Módulo 1 falhou em gerar parser para '{label}'.")
+                
+                except Exception as e:
+                    logging.error(f"[BACKGROUND] TAREFA CRASHOU: {e}")
+                
+                finally:
+                    # 4. REMOVER O LOCK (ESSENCIAL!)
+                    # Aconteça o que acontecer (sucesso ou falha), removemos o lock
+                    # para que a próxima requisição possa tentar gerar novamente.
+                    logging.info(f"[BACKGROUND] Removendo lock para '{label}'...")
+                    task_repo.remove_lock(label)
+
+            # Dispara a thread em background.
+            generation_thread = threading.Thread(target=_run_parser_generation_task)
+            generation_thread.start() 
+
+        # 5. TAREFA SÍNCRONA (Foreground)
+        # Esta parte roda independentemente da lógica de lock (sempre damos uma resposta)
+        logging.info("Executando Fallback Síncrono (Modo 1) para responder ao usuário...")
+        fallback = FallbackExtractor()
+        extracted_data = fallback.extract_all(schema, pdf_text)
+        
+        if not extracted_data:
+            logging.error("Falha Síncrona: Fallback (Modo 1) também falhou.")
+            return {"error": "Falha na extração de fallback."}
+        
+        logging.info("Fallback Síncrono concluído. Retornando dados ao usuário.")
+        return extracted_data
+
+# --- SIMULAÇÃO DE FLUXO (Exatamente o mesmo de antes) ---
 if __name__ == "__main__":
-    logging.info("--- INICIANDO SIMULAÇÃO DE FLUXO COMPLETA ---")
+    logging.info("--- INICIANDO SIMULAÇÃO DE FLUXO (V2 ASYNC) ---")
 
     # Carregando dados do EXEMPLO 1 do desafio
-    label_teste = "carteira_oab" 
+    label_teste = "carteira_oab"
     
-    # Texto do PDF Exemplo 1 [cite: 409-413, 417]
     pdf_texto_exemplo1 = """
 SON GOKU
 
@@ -123,7 +143,6 @@ Telefone Profissional
 SITUAÇÃO REGULAR
 """
     
-    # Schema do Exemplo 1 [cite: 416-427]
     schema_exemplo1 = {
       "nome": "Nome do profissional, normalmente no canto superior esquerdo da imagem",
       "inscricao": "Número de inscrição do profissional",
@@ -134,33 +153,36 @@ SITUAÇÃO REGULAR
       "situacao": "Situação do profissional, normalmente no canto inferior direito."
     }
 
-    # --- TESTE 1: CACHE MISS (Força a Geração do Parser) ---
-    print("\n\n--- [TESTE 1: CACHE MISS] ---")
-    print("Limpando cache (se existir) para forçar o Módulo 1 (Geração)...")
+    # --- TESTE 1: CACHE MISS (Força o Fluxo Assíncrono) ---
+    print("\n\n--- [TESTE 1: CACHE MISS (V2)] ---")
+    print("Limpando cache (se existir) para forçar o Módulo 1 (Geração) em BACKGROUND...")
     
-    # Bloco de limpeza de cache
     repo_para_limpar = ParserRepository()
     parser_path = repo_para_limpar._get_parser_filepath(label_teste)
     if os.path.exists(parser_path):
         os.remove(parser_path)
         logging.info(f"Cache antigo '{parser_path}' removido.")
     
-    # Executa a primeira vez (vai chamar o Módulo 1 e o Módulo 2)
     dados_teste_1 = processar_extracao(label_teste, schema_exemplo1, pdf_texto_exemplo1.strip())
-    print(f"--- RESULTADO (TESTE 1): ---\n{json.dumps(dados_teste_1, indent=2, ensure_ascii=False)}\n")
+    print(f"--- RESULTADO (TESTE 1 - DO FALLBACK SÍNCRONO): ---\n{json.dumps(dados_teste_1, indent=2, ensure_ascii=False)}\n")
+    print("... A GERAÇÃO DO PARSER (M1) PODE ESTAR RODANDO EM BACKGROUND AGORA ...")
+
+    # (Adicionamos uma pequena espera para dar tempo da thread terminar
+    #  antes de rodar o teste 2, apenas para fins de simulação)
+    import time
+    print("... Aguardando a tarefa de background (M1) terminar (simulação)...")
+    # (Em um servidor real, a thread continuaria rodando
+    #  independentemente desta simulação)
+    # Vamos esperar um pouco mais que os 55s do seu teste anterior
+    # time.sleep(60) 
+    # (Comente o sleep(60) se não quiser esperar, mas o Teste 2 pode falhar se a thread não terminar)
 
 
     # --- TESTE 2: CACHE HIT (O Caminho Rápido) ---
-    print("\n\n--- [TESTE 2: CACHE HIT] ---")
-    print("Executando 2ª vez. O parser já deve existir no cache.")
+    print("\n\n--- [TESTE 2: CACHE HIT (V2)] ---")
+    print("Executando 2ª vez. Se a thread de background terminou, deve dar CACHE HIT.")
     
-    # Executa a segunda vez (vai usar o Módulo 2 diretamente)
     dados_teste_2 = processar_extracao(label_teste, schema_exemplo1, pdf_texto_exemplo1.strip())
-    print(f"--- RESULTADO (TESTE 2): ---\n{json.dumps(dados_teste_2, indent=2, ensure_ascii=False)}\n")
-    
-    # (Opcional) Teste 3: Forçar Fallback de Baixa Confiança
-    # Para fazer isso, você pode:
-    # 1. Editar manualmente o .json em 'parser_repository_cache' e quebrar uma das Regex.
-    # 2. Ou mais fácil: mude `MIN_CONFIDENCE_THRESHOLD = 1.0` temporariamente e rode o Teste 2.
+    print(f"--- RESULTADO (TESTE 2 - DO MÓDULO 2): ---\n{json.dumps(dados_teste_2, indent=2, ensure_ascii=False)}\n")
     
     print("\n--- SIMULAÇÃO CONCLUÍDA ---")
