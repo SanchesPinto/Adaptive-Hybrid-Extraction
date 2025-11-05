@@ -31,34 +31,79 @@ class ParserGenerator:
         
     def _build_prompt(self, schema: dict, pdf_text: str) -> str:
         """
-        Monta o prompt final com base no template, inserindo o schema
-        e o texto do PDF como exemplos.
+        Monta o prompt "V4" (baseado no Relatório de Prompt e na Abordagem 2).
+        
+        Este prompt instrui o LLM a:
+        1. Fazer Mapeamento Semântico (ex: "data_vencimento" -> "VENCIMENTO")
+        2. Analisar o Layout (Princípio 1)
+        3. Planejar a Invariância (Princípio 2)
+        4. Usar os rótulos mapeados como Âncoras (Princípio 3)
+        5. Usar as chaves do schema como Nomes dos Grupos de Captura
+        6. Retornar um JSON estruturado com uma ÚNICA string de Regex.
         """
         
         # Converte o schema dict para uma string JSON formatada
         schema_str = json.dumps(schema, indent=2, ensure_ascii=False)
         
-        # O template do prompt que definimos
+        # O template do prompt V4
         # Note que as barras invertidas do Regex (ex: \s) são escapadas (\\s)
         # para que sejam lidas corretamente como strings literais.
         prompt_template = f"""
-Você é um programador de elite, especialista em criar Expressões Regulares (Regex) robustas em Python.
+# FUNÇÃO
+Você é um motor de geração de parser de elite, especialista em Expressões Regulares (PCRE) em Python.
+Sua função é analisar um `extraction_schema` e um `texto_pdf_exemplo` para gerar um **único** parser de Expressão Regular que seja semanticamente robusto e invariante a layout [cite: 623-625].
+Você opera com "precisão cirúrgica"[cite: 529].
 
-Sua tarefa é gerar um PARSER. Você receberá um `extraction_schema` (JSON) e um `texto_pdf` (string) como exemplo.
-
-Seu objetivo é criar um conjunto de expressões Regex em Python para extrair CADA campo definido no `extraction_schema` a partir do `texto_pdf`.
-
-REGRAS DE GERAÇÃO:
-1.  **Robustez:** A Regex deve ser o mais robusta possível. Use grupos de captura (parênteses `()`) para isolar o valor exato a ser extraído. A Regex deve ser resiliente a espaços em branco extras (`\\s*`) e quebras de linha (`\\n`) entre o rótulo (ex: "Inscrição") e o valor (ex: "101943").
-2.  **Multilinha:** Para valores que podem ter quebras de linha (como 'nome' ou 'endereco'), use padrões (como `[\\s\\S]+?`) que capturem texto multilinha de forma não-gananciosa.
-3.  **Campos Não Encontrados:** Se um campo do `extraction_schema` for impossível de encontrar no `texto_pdf` de exemplo (como "telefone_profissional" no exemplo), o valor para essa chave no JSON de saída deve ser `null`.
-4.  **Formato de Saída:** Responda APENAS com um objeto JSON válido. As chaves devem ser EXATAMENTE as chaves do `extraction_schema` de entrada. Os valores devem ser a STRING da Regex (ou `null`). Não inclua explicações, apenas o JSON.
-
----
-INPUT: EXTRACTION SCHEMA
+# ENTRADAS
+## 1. extraction_schema (JSON)
 ```json
 {schema_str}
+```
+
+## 2. texto_pdf_exemplo (STRING)
+```plaintext
 {pdf_text}
+```
+REGRAS DE GERAÇÃO (CRÍTICO)
+    1. MAPEAMENTO SEMÂNTICO: Sua primeira tarefa é analisar o extraction_schema e o texto_pdf_exemplo. Para CADA chave no schema (ex: "data_vencimento"), encontre o rótulo de texto literal mais provável no PDF (ex: "VENCIMENTO" ou "Vencim. Data"). Chaves e rótulos podem ser idênticos (ex: "seccional" -> "Seccional").
+    2. INVARIÂNCIA DE LAYOUT: A Regex gerada deve ser robusta a variações de layout . O exemplo fornecido é apenas uma possibilidade. O valor pode estar na mesma linha que o rótulo (ex: 'Seccional: PR'), na linha abaixo, ou em uma coluna adjacente. A Regex deve capturar o valor semanticamente.
+    3. RESTRIÇÃO NEGATIVA: Não crie uma Regex que dependa da ordem das colunas ou de uma contagem fixa de colunas .
+    4. ANCORAGEM SEMÂNTICA: A lógica da Regex deve usar os rótulos do PDF que você identificou na Regra 1 (ex: "VENCIMENTO") como âncoras para localizar os valores .
+    5. DEFINIÇÃO DE LIMITES: A captura do valor deve ser o mais restrita possível (usar quantificadores non-greedy .*?) . O grupo de captura para um valor deve parar antes de encontrar o final da linha (\\n) ou o início de qualquer outro rótulo que você identificou .
+    6. GRUPOS DE CAPTURA NOMEADOS: A Regex deve usar grupos de captura nomeados (named capture groups) (ex: ?<nome_do_campo>...) . O nome do grupo deve corresponder exatamente à CHAVE original do extraction_schema (ex: ?<data_vencimento>...), e não ao rótulo do PDF.
+
+FORMATO DE SAÍDA OBRIGATÓRIO (SCHEMA JSON)
+
+Você deve responder apenas com um objeto JSON válido que corresponda ao seguinte schema. Preencha cada campo com seu raciocínio .
+```json
+{{
+  "type": "object",
+  "properties": {{
+    "layout_analysis": {{
+      "type": "string",
+      "description": "Sua análise verbal do padrão de layout do exemplo (Princípio 1)."
+    }},
+    "semantic_mapping": {{
+      "type": "object",
+      "description": "Mapeamento da CHAVE do schema para o RÓTULO literal no PDF. Ex: {{'data_vencimento': 'VENCIMENTO', 'seccional': 'Seccional'}}"
+    }},
+    "invariance_plan": {{
+      "type": "string",
+      "description": "Como sua Regex lidará com variações de layout (Princípio 2)."
+    }},
+    "boundary_logic": {{
+      "type": "string",
+      "description": "Como sua Regex evita capturar texto adjacente (Princípio 3)."
+    }},
+    "generated_regex": {{
+      "type": "string",
+      "description": "A string final da Regex (PCRE) com grupos nomeados que implementa esta lógica."
+    }}
+  }},
+  "required": ["layout_analysis", "semantic_mapping", "invariance_plan", "boundary_logic", "generated_regex"]
+}}
+```
+
 """
         return prompt_template.strip()
 
