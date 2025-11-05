@@ -121,6 +121,7 @@ def processar_extracao(label: str, schema: dict, pdf_text: str):
         return extracted_data
 
 # --- SIMULAÇÃO DE FLUXO (Exatamente o mesmo de antes) ---
+"""
 if __name__ == "__main__":
     logging.info("--- INICIANDO SIMULAÇÃO DE FLUXO (V2 ASYNC) ---")
 
@@ -128,19 +129,19 @@ if __name__ == "__main__":
     label_teste = "carteira_oab"
     
     pdf_texto_exemplo1 = """
-SON GOKU
+#SON GOKU
 
-Inscrição
-101943
-Seccional
-PR
-Subseção
-CONSELHO SECCIONAL-PARANÁ
+#Inscrição
+#101943
+#Seccional
+#PR
+#Subseção
+#CONSELHO SECCIONAL-PARANÁ
 
-SUPLEMENTAR
-Endereco Profissional
-Telefone Profissional
-SITUAÇÃO REGULAR
+#SUPLEMENTAR
+#Endereco Profissional
+#Telefone Profissional
+#SITUAÇÃO REGULAR
 """
     
     schema_exemplo1 = {
@@ -186,3 +187,4 @@ SITUAÇÃO REGULAR
     print(f"--- RESULTADO (TESTE 2 - DO MÓDULO 2): ---\n{json.dumps(dados_teste_2, indent=2, ensure_ascii=False)}\n")
     
     print("\n--- SIMULAÇÃO CONCLUÍDA ---")
+"""
