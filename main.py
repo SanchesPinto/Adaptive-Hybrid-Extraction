@@ -243,7 +243,7 @@ SITUAÇÃO REGULAR
     # Vamos pausar o script principal para dar tempo à thread de 55s.
     # Em uma API (FastAPI), isso não seria necessário.
     import time
-    time.sleep(60) # Simula o tempo de geração do parser
+    time.sleep(80) # Simula o tempo de geração do parser
 
 
     # --- TESTE 2: CACHE HIT PARCIAL (Exemplo 2) ---
@@ -255,7 +255,7 @@ SITUAÇÃO REGULAR
     dados_teste_2 = processar_extracao(label_teste, schema_exemplo2, pdf_texto_exemplo2.strip())
     print(f"--- RESULTADO (TESTE 2 - Fallback): ---\n{json.dumps(dados_teste_2, indent=2, ensure_ascii=False)}\n")
     print("--- (Aguarde o job async de RE-GERAÇÃO terminar...) ---")
-    time.sleep(60) # Simula o tempo de RE-geração do parser
+    time.sleep(80) # Simula o tempo de RE-geração do parser
 
 
     # --- TESTE 3: CACHE HIT TOTAL (Exemplo 1 Novamente) ---

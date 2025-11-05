@@ -10,19 +10,28 @@
     "endereco_profissional": "Endereço profissional completo"
   },
   "parser_v4": {
-    "layout_analysis": "O exemplo apresenta um cabeçalho com o NOME em linha própria (linha acima do rótulo 'Inscrição'). Em seguida há rótulos explícitos em linhas separadas: 'Inscrição' com valor na linha abaixo, 'Seccional' e 'Subseção' em sequência, o bloco 'Endereço Profissional' seguido de até várias linhas (rua, cidade/UF, CEP), depois o rótulo 'Telefone Profissional' e por fim a linha de 'SITUAÇÃO'. Há também uma linha intermediária em maiúsculas ('CONSELHO SECCIONAL-PARANA') que atua como categoria/identificador institucional. O layout pode variar: valores podem estar na mesma linha do rótulo ou na linha seguinte, e campos de endereço podem ocupar várias linhas.",
+    "layout_analysis": "O documento de exemplo apresenta o nome do profissional na primeira linha sem rótulo explícito. Vários rótulos aparecem cada um em sua própria linha (ex.: \"Inscrição\", \"Seccional\", \"Subseção\", \"Endereço Profissional\", \"Telefone Profissional\"). Valores podem estar na mesma linha do rótulo ou na(s) linha(s) imediatamente seguintes; o endereço é multi-linha. Note-se que o rótulo \"Telefone Profissional\" existe mas não tem valor associado no exemplo (é seguido imediatamente por outra linha que contém a situação). A palavra \"SITUAÇÃO\" aparece em maiúsculas seguida do valor \"REGULAR\" na última linha (aqui \"SITUAÇÃO\" funciona como âncora).",
     "semantic_mapping": {
-      "nome": "linha anterior ao rótulo 'Inscrição' (nome do profissional)",
+      "nome": null,
       "inscricao": "Inscrição",
       "seccional": "Seccional",
       "subsecao": "Subseção",
-      "categoria": "CONSELHO SECCIONAL-PARANA",
-      "telefone_profissional": "Telefone Profissional",
+      "categoria": null,
+      "telefone_profissional": null,
       "situacao": "SITUAÇÃO",
       "endereco_profissional": "Endereço Profissional"
     },
-    "invariance_plan": "Uso de âncoras textuais (os rótulos identificados) dentro de lookaheads para localizar cada campo independentemente da ordem visual. A regex opera em modo dotall/multiline (flags inline) para permitir valores na mesma linha ou em linhas subsequentes e para capturar blocos multi-linha (ex.: endereço). Cada grupo nomeado é buscado por um lookahead que encontra o rótulo correspondente e captura o conteúdo não-guloso até a ocorrência do próximo rótulo conhecido ou até o fim do documento. Isso evita dependência de coluna fixa ou posição absoluta.",
-    "boundary_logic": "Cada captura usa quantificadores não-gulosos ([\\s\\S]*?) e termina por lookahead que detecta o início de qualquer outro rótulo identificado (ex.: Seccional, Endereço Profissional, Telefone Profissional, SITUAÇÃO) ou o fim do texto. Para o campo 'nome' usa-se um lookahead que captura a linha imediatamente anterior ao rótulo 'Inscrição' (evita capturar múltiplas linhas de cabeçalho). Para 'categoria' (linha com 'CONSELHO SECCIONAL...') captura-se apenas a linha que contém essa expressão. Assim, impedimos que um campo absorva o conteúdo de rótulos adjacentes e respeitamos limites de campo mesmo em layouts variados.",
-    "generated_regex": "(?ims)(?=.*(?P<nome>^[^\\r\\n].*?)(?=\\r?\\n\\s*Inscrição\\b))(?=.*Inscrição\\b[\\s:\\-]*?(?P<inscricao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Seccional\\b|Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Seccional\\b[\\s:\\-]*?(?P<seccional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Subseção\\b|Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Subseção\\b[\\s:\\-]*?(?P<subsecao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*(?P<categoria>^[^\\r\\n]*CONSELHO\\s+SECCIONAL[^\\r\\n]*))(?=.*Endereço Profissional\\b[\\s:\\-]*?(?P<endereco_profissional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Telefone Profissional\\b[\\s:\\-]*?(?P<telefone_profissional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:SITUAÇÃO\\b|$))))(?=.*SITUAÇÃO\\b[\\s:\\-]*?(?P<situacao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:$))))[\\s\\S]*$"
+    "invariance_plan": "Cada regex âncora-se ao rótulo literal detectado (case-insensitive) e aceita o valor logo após o rótulo, seja na mesma linha ou em linhas subsequentes. Uso de flags inline (?si) para tornar a correspondência case-insensitive e permitir que '.' capture quebras de linha quando necessário para campos multi-linha (ex.: endereço). A regex não depende da ordem dos rótulos: cada padrão procura seu próprio rótulo em qualquer posição do texto. Separadores comuns (dois pontos, hífen, espaços) são tolerados após o rótulo.",
+    "boundary_logic": "Cada captura usa quantificadores não-greedy (.*?) e um lookahead que força a parada quando encontra: (a) o início de qualquer outro rótulo identificado (lista alternativa com os rótulos detectados), (b) o fim da linha final do documento, ou (c) uma nova linha vazia. Isso evita que um campo consuma texto pertencente a outro rótulo. Para endereços multi-linha permitimos múltiplas linhas na captura, mas ainda interrompemos antes do próximo rótulo conhecido.",
+    "generated_regex_dict": {
+      "nome": null,
+      "inscricao": "(?si)Inscrição\\b[^\\S\\r\\n]*[:\\-]?[^\\S\\r\\n]*\\r?\\n?[ \\t]*(?P<inscricao>.*?)(?=(?:\\r?\\n\\s*(?:Inscrição|Seccional|Subseção|Endereço Profissional|Telefone Profissional|SITUAÇÃO)\\b)|\\r?\\n$|$)",
+      "seccional": "(?si)Seccional\\b[^\\S\\r\\n]*[:\\-]?[^\\S\\r\\n]*\\r?\\n?[ \\t]*(?P<seccional>.*?)(?=(?:\\r?\\n\\s*(?:Inscrição|Seccional|Subseção|Endereço Profissional|Telefone Profissional|SITUAÇÃO)\\b)|\\r?\\n$|$)",
+      "subsecao": "(?si)Subseção\\b[^\\S\\r\\n]*[:\\-]?[^\\S\\r\\n]*\\r?\\n?[ \\t]*(?P<subsecao>.*?)(?=(?:\\r?\\n\\s*(?:Inscrição|Seccional|Subseção|Endereço Profissional|Telefone Profissional|SITUAÇÃO)\\b)|\\r?\\n$|$)",
+      "categoria": null,
+      "telefone_profissional": null,
+      "situacao": "(?si)SITUAÇÃO\\b[^\\S\\r\\n]*[:\\-]?[^\\S\\r\\n]*\\r?\\n?[ \\t]*(?P<situacao>.*?)(?=(?:\\r?\\n\\s*(?:Inscrição|Seccional|Subseção|Endereço Profissional|Telefone Profissional|SITUAÇÃO)\\b)|\\r?\\n$|$)",
+      "endereco_profissional": "(?si)Endereço Profissional\\b[^\\S\\r\\n]*[:\\-]?[^\\S\\r\\n]*\\r?\\n?[ \\t]*(?P<endereco_profissional>.*?)(?=(?:\\r?\\n\\s*(?:Inscrição|Seccional|Subseção|Endereço Profissional|Telefone Profissional|SITUAÇÃO)\\b)|\\r?\\n$|$)"
+    }
   }
 }

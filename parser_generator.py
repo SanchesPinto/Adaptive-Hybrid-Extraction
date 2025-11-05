@@ -31,7 +31,7 @@ class ParserGenerator:
         
     def _build_prompt(self, schema: dict, pdf_text: str) -> str:
         """
-        Monta o prompt "V4" (baseado no Relatório de Prompt e na Abordagem 2).
+        Monta o prompt "V6" (agora também robusto para campos vazios).
         
         Este prompt instrui o LLM a:
         1. Fazer Mapeamento Semântico (ex: "data_vencimento" -> "VENCIMENTO")
@@ -51,8 +51,8 @@ class ParserGenerator:
         prompt_template = f"""
 # FUNÇÃO
 Você é um motor de geração de parser de elite, especialista em Expressões Regulares (PCRE) em Python.
-Sua função é analisar um `extraction_schema` e um `texto_pdf_exemplo` para gerar um **único** parser de Expressão Regular que seja semanticamente robusto e invariante a layout [cite: 623-625].
-Você opera com "precisão cirúrgica"[cite: 529].
+Sua função é analisar um `extraction_schema` e um `texto_pdf_exemplo` para gerar um **único** parser de Expressão Regular que seja semanticamente robusto e invariante a layout.
+Você opera com "precisão cirúrgica".
 
 # ENTRADAS
 ## 1. extraction_schema (JSON)
@@ -66,6 +66,8 @@ Você opera com "precisão cirúrgica"[cite: 529].
 ```
 REGRAS DE GERAÇÃO (CRÍTICO)
     1. MAPEAMENTO SEMÂNTICO: Sua primeira tarefa é analisar o extraction_schema e o texto_pdf_exemplo. Para CADA chave no schema (ex: "data_vencimento"), encontre o rótulo de texto literal mais provável no PDF (ex: "VENCIMENTO" ou "Vencim. Data"). Chaves e rótulos podem ser idênticos (ex: "seccional" -> "Seccional").
+      1.1. CAMPOS NÃO ENCONTRADOS: Se um campo do schema (ex: "campo_fantasma") for impossível de encontrar no texto_pdf_exemplo, seu valor no semantic_mapping deve ser null.
+      1.2. CAMPOS SEM VALOR: Se um rótulo de campo (ex: "Telefone Profissional") for encontrado, mas NÃO HOUVER VALOR associado a ele (ex: está seguido por outro rótulo ou pelo fim do texto), o mapeamento deve ser null.
     2. INVARIÂNCIA DE LAYOUT: A Regex gerada deve ser robusta a variações de layout . O exemplo fornecido é apenas uma possibilidade. O valor pode estar na mesma linha que o rótulo (ex: 'Seccional: PR'), na linha abaixo, ou em uma coluna adjacente. A Regex deve capturar o valor semanticamente.
     3. RESTRIÇÃO NEGATIVA: Não crie uma Regex que dependa da ordem das colunas ou de uma contagem fixa de colunas .
     4. ANCORAGEM SEMÂNTICA: A lógica da Regex deve usar os rótulos do PDF que você identificou na Regra 1 (ex: "VENCIMENTO") como âncoras para localizar os valores .
@@ -74,7 +76,8 @@ REGRAS DE GERAÇÃO (CRÍTICO)
 
 FORMATO DE SAÍDA OBRIGATÓRIO (SCHEMA JSON)
 
-Você deve responder apenas com um objeto JSON válido que corresponda ao seguinte schema. Preencha cada campo com seu raciocínio .
+Você *deve* responder *apenas* com um objeto JSON válido que corresponda ao seguinte schema. Preencha cada campo com seu raciocínio.
+
 ```json
 {{
   "type": "object",
@@ -85,7 +88,7 @@ Você deve responder apenas com um objeto JSON válido que corresponda ao seguin
     }},
     "semantic_mapping": {{
       "type": "object",
-      "description": "Mapeamento da CHAVE do schema para o RÓTULO literal no PDF. Ex: {{'data_vencimento': 'VENCIMENTO', 'seccional': 'Seccional'}}"
+      "description": "Mapeamento da CHAVE do schema para o RÓTULO literal no PDF. Se o rótulo não for encontrado ou não tiver valor, mapeie para `null`. Ex: {{'telefone_profissional': null, 'seccional': 'Seccional'}}"
     }},
     "invariance_plan": {{
       "type": "string",
@@ -93,16 +96,16 @@ Você deve responder apenas com um objeto JSON válido que corresponda ao seguin
     }},
     "boundary_logic": {{
       "type": "string",
-      "description": "Como sua Regex evita capturar texto adjacente (Princípio 3)."
+      "description": "Como sua Regex evita capturar texto adjacente (Regra 5)."
     }},
-    "generated_regex": {{
-      "type": "string",
-      "description": "A string final da Regex (PCRE) com grupos nomeados que implementa esta lógica."
+    "generated_regex_dict": {{
+      "type": "object",
+      "description": "Objeto JSON de pares chave-valor. A CHAVE é a chave do schema (ex: 'data_vencimento'). O VALOR é a string Regex INDIVIDUAL (com um grupo de captura `()`) para extrair esse campo. **Se o campo foi mapeado para `null` na Regra 1, o valor aqui também deve ser `null`**."
     }}
   }},
-  "required": ["layout_analysis", "semantic_mapping", "invariance_plan", "boundary_logic", "generated_regex"]
+  "required": ["layout_analysis", "semantic_mapping", "invariance_plan", "boundary_logic", "generated_regex_dict"]
 }}
-```
+
 
 """
         return prompt_template.strip()
