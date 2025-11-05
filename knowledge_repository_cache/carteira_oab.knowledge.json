@@ -1,0 +1,28 @@
+{
+  "merged_schema": {
+    "nome": "Nome do profissional...",
+    "inscricao": "Número de inscrição...",
+    "seccional": "Seccional do profissional",
+    "subsecao": "Subseção...",
+    "categoria": "Categoria...",
+    "telefone_profissional": "Telefone...",
+    "situacao": "Situação do profissional...",
+    "endereco_profissional": "Endereço profissional completo"
+  },
+  "parser_v4": {
+    "layout_analysis": "O exemplo apresenta um cabeçalho com o NOME em linha própria (linha acima do rótulo 'Inscrição'). Em seguida há rótulos explícitos em linhas separadas: 'Inscrição' com valor na linha abaixo, 'Seccional' e 'Subseção' em sequência, o bloco 'Endereço Profissional' seguido de até várias linhas (rua, cidade/UF, CEP), depois o rótulo 'Telefone Profissional' e por fim a linha de 'SITUAÇÃO'. Há também uma linha intermediária em maiúsculas ('CONSELHO SECCIONAL-PARANA') que atua como categoria/identificador institucional. O layout pode variar: valores podem estar na mesma linha do rótulo ou na linha seguinte, e campos de endereço podem ocupar várias linhas.",
+    "semantic_mapping": {
+      "nome": "linha anterior ao rótulo 'Inscrição' (nome do profissional)",
+      "inscricao": "Inscrição",
+      "seccional": "Seccional",
+      "subsecao": "Subseção",
+      "categoria": "CONSELHO SECCIONAL-PARANA",
+      "telefone_profissional": "Telefone Profissional",
+      "situacao": "SITUAÇÃO",
+      "endereco_profissional": "Endereço Profissional"
+    },
+    "invariance_plan": "Uso de âncoras textuais (os rótulos identificados) dentro de lookaheads para localizar cada campo independentemente da ordem visual. A regex opera em modo dotall/multiline (flags inline) para permitir valores na mesma linha ou em linhas subsequentes e para capturar blocos multi-linha (ex.: endereço). Cada grupo nomeado é buscado por um lookahead que encontra o rótulo correspondente e captura o conteúdo não-guloso até a ocorrência do próximo rótulo conhecido ou até o fim do documento. Isso evita dependência de coluna fixa ou posição absoluta.",
+    "boundary_logic": "Cada captura usa quantificadores não-gulosos ([\\s\\S]*?) e termina por lookahead que detecta o início de qualquer outro rótulo identificado (ex.: Seccional, Endereço Profissional, Telefone Profissional, SITUAÇÃO) ou o fim do texto. Para o campo 'nome' usa-se um lookahead que captura a linha imediatamente anterior ao rótulo 'Inscrição' (evita capturar múltiplas linhas de cabeçalho). Para 'categoria' (linha com 'CONSELHO SECCIONAL...') captura-se apenas a linha que contém essa expressão. Assim, impedimos que um campo absorva o conteúdo de rótulos adjacentes e respeitamos limites de campo mesmo em layouts variados.",
+    "generated_regex": "(?ims)(?=.*(?P<nome>^[^\\r\\n].*?)(?=\\r?\\n\\s*Inscrição\\b))(?=.*Inscrição\\b[\\s:\\-]*?(?P<inscricao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Seccional\\b|Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Seccional\\b[\\s:\\-]*?(?P<seccional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Subseção\\b|Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Subseção\\b[\\s:\\-]*?(?P<subsecao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Endereço Profissional\\b|Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*(?P<categoria>^[^\\r\\n]*CONSELHO\\s+SECCIONAL[^\\r\\n]*))(?=.*Endereço Profissional\\b[\\s:\\-]*?(?P<endereco_profissional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:Telefone Profissional\\b|SITUAÇÃO\\b|$))))(?=.*Telefone Profissional\\b[\\s:\\-]*?(?P<telefone_profissional>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:SITUAÇÃO\\b|$))))(?=.*SITUAÇÃO\\b[\\s:\\-]*?(?P<situacao>[\\s\\S]*?)(?=(?:\\r?\\n\\s*(?:$))))[\\s\\S]*$"
+  }
+}

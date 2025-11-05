@@ -1,4 +1,3 @@
-python
 import re
 import logging
 from typing import Dict, Optional
