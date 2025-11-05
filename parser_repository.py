@@ -86,3 +86,18 @@ class ParserRepository:
                 logging.info(f"LOCK REMOVIDO: Geração do parser para '{label}' concluída.")
         except IOError as e:
             logging.error(f"Falha ao remover lock para '{label}': {e}")
+
+    def limpar_cache_completo(self):
+        """
+        Limpa TODOS os arquivos .json e .lock do diretório de cache.
+        Usado para garantir testes limpos.
+        """
+        logging.info(f"--- [LIMPEZA] Limpando cache em {self.cache_dir} ---")
+        try:
+            for f_name in os.listdir(self.cache_dir):
+                file_path = os.path.join(self.cache_dir, f_name)
+                if os.path.isfile(file_path) and (f_name.endswith('.json') or f_name.endswith('.lock')):
+                    os.remove(file_path)
+            logging.info("Cache limpo.")
+        except Exception as e:
+            logging.error(f"Falha ao limpar o cache: {e}")
