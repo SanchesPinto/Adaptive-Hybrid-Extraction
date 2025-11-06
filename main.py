@@ -35,7 +35,7 @@ def ler_texto_do_pdf(pdf_path: str) -> str | None:
         with fitz.open(full_path) as doc:
             texto_completo = ""
             for page in doc:
-                # O desafio diz que cada PDF tem apenas uma página [cite: 20]
+                # O desafio diz que cada PDF tem apenas uma página 
                 texto_completo += page.get_text()
             return texto_completo
     except Exception as e:
@@ -48,10 +48,10 @@ def ler_texto_do_pdf(pdf_path: str) -> str | None:
 def processar_extracao(label: str, 
                        item_schema: dict, 
                        pdf_text: str,
-                       merged_schemas_map: dict):
+                       merged_data_map: dict): # <-- 1. Nome do parâmetro mudou
     """
-    Função principal do Orquestrador (Módulo 4), V2.1 + V9.
-    [CORRIGIDA com a lógica de Confiança-Primeiro (V14)]
+    Função principal do Orquestrador (Módulo 4), V15.
+    Agora usa o 'merged_data_map' (schema E textos).
     """
     logging.info(f"Iniciando processamento (V2.1 Lock) para o label: {label}")
     
@@ -59,27 +59,24 @@ def processar_extracao(label: str,
     parser = repo.get_parser(label)
 
     if parser:
-        # --- CAMINHO 1: CACHE HIT (O "Caminho Rápido") [V14] ---
+        # --- CAMINHO 1: CACHE HIT ---
+        # (A lógica V14 que implementamos está perfeita, 
+        #  só precisamos garantir que ela receba o 'merged_data_map')
+        
         logging.info("CACHE HIT. Acionando Módulo 2 (Executor)...")
         executor = ParserExecutor()
         
-        # 1. O Executor (Módulo 2) extrai o schema COMPLETO (ex: 8 campos)
-        extracted_data_COMPLETO = executor.execute_parser(parser, pdf_text) #
+        extracted_data_COMPLETO = executor.execute_parser(parser, pdf_text)
         
         logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2 - Completo) ---")
         logging.info(json.dumps(extracted_data_COMPLETO, indent=2, ensure_ascii=False))
 
-        # 2. [A CORREÇÃO V14] Buscamos o schema completo que o parser FOI 
-        #    TREINADO para extrair (o schema mesclado).
-        schema_COMPLETO = merged_schemas_map[label]
+        # Usamos o 'merged_data_map' para pegar o schema completo para validação
+        schema_COMPLETO = merged_data_map[label]['schema'] # [V14]
 
-        # 3. Calculamos a confiança no resultado COMPLETO.
-        #    Isso expõe TODAS as falhas do parser.
         calculator = ConfidenceCalculator()
-        confidence = calculator.calculate_confidence(extracted_data_COMPLETO, schema_COMPLETO) #
+        confidence = calculator.calculate_confidence(extracted_data_COMPLETO, schema_COMPLETO)
         
-        # 4. Agora filtramos os dados para o que o item pediu.
-        #    Este é o dado que retornaremos em caso de SUCESSO.
         extracted_data_FILTRADO = {
             k: extracted_data_COMPLETO.get(k) for k in item_schema.keys()
         }
@@ -89,11 +86,10 @@ def processar_extracao(label: str,
 
         if confidence >= MIN_CONFIDENCE_THRESHOLD:
             logging.info(f"Confiança Alta ({confidence:.2f} >= {MIN_CONFIDENCE_THRESHOLD}). Retornando dados do Módulo 2 (Filtrados).")
-            return extracted_data_FILTRADO # Retorna os dados filtrados
+            return extracted_data_FILTRADO
         else:
-            # 5. O Fallback Otimizado é acionado pela baixa confiança.
             logging.warning(f"Confiança Baixa ({confidence:.2f} < {MIN_CONFIDENCE_THRESHOLD}). Acionando Fallback Otimizado (Modo 2)...")
-            fallback = FallbackExtractor() #
+            fallback = FallbackExtractor()
             
             campos_faltantes = {
                 k: v for k, v in item_schema.items() 
@@ -103,7 +99,7 @@ def processar_extracao(label: str,
                  logging.warning("Confiança baixa em campos não solicitados. Retornando dados filtrados.")
                  return extracted_data_FILTRADO 
 
-            fallback_data = fallback.extract_missing(campos_faltantes, pdf_text, extracted_data_FILTRADO) #
+            fallback_data = fallback.extract_missing(campos_faltantes, pdf_text, extracted_data_FILTRADO)
             
             if fallback_data:
                 final_data = extracted_data_FILTRADO.copy(); final_data.update(fallback_data)
@@ -113,8 +109,6 @@ def processar_extracao(label: str,
     
     else:
         # --- CAMINHO 2: CACHE MISS (V2.1 com Lock) ---
-        # (Esta lógica está perfeita e não precisa de mudanças)
-        
         logging.warning(f"CACHE MISS para {label}. Verificando lock de geração...")
 
         if repo.is_generation_locked(label):
@@ -123,13 +117,21 @@ def processar_extracao(label: str,
             logging.info(f"Lock não encontrado. Criando lock e disparando thread de geração...")
             repo.create_lock(label)
 
+            # 3. TAREFA ASSÍNCRONA (Background) [MODIFICADA]
             def _run_parser_generation_task():
                 task_repo = ParserRepository()
                 task_generator = ParserGenerator()
                 try:
                     logging.info(f"[BACKGROUND] TAREFA INICIADA: Gerando parser para '{label}'...")
-                    schema_completo_mesclado = merged_schemas_map[label]
-                    new_parser = task_generator.generate_parser(schema_completo_mesclado, pdf_text)
+                    
+                    # --- AQUI ESTÁ A MUDANÇA ---
+                    # Pegamos o schema mesclado E os textos agregados
+                    dados_completos_label = merged_data_map[label]
+                    schema_completo = dados_completos_label['schema']
+                    textos_agregados = dados_completos_label['text_examples']
+                    
+                    # Passamos AMBOS para o gerador
+                    new_parser = task_generator.generate_parser(schema_completo, textos_agregados)
                     
                     if new_parser:
                         task_repo.save_parser(label, new_parser)
@@ -146,9 +148,10 @@ def processar_extracao(label: str,
             generation_thread = threading.Thread(target=_run_parser_generation_task)
             generation_thread.start() 
 
+        # 5. TAREFA SÍNCRONA (Foreground)
+        # (Esta parte não muda, continua perfeita)
         logging.info("Executando Fallback Síncrono (Modo 1) para responder ao usuário...")
         fallback = FallbackExtractor()
-        
         extracted_data = fallback.extract_all(item_schema, pdf_text)
         
         if not extracted_data:
@@ -161,61 +164,76 @@ def processar_extracao(label: str,
 #
 # --- NOVA FUNÇÃO (FASE 1: PRÉ-SCAN) ---
 #
-def pre_scan_e_mesclar_schemas(batch_data: list) -> dict:
+def pre_scan_e_agregar_dados(batch_data: list) -> dict:
     """
-    FASE 1: Itera por todo o batch ANTES do processamento
-    para construir um mapa de schemas mesclados.
+    FASE 1 (V15): Itera por todo o batch ANTES do processamento
+    para construir um mapa que contém:
+    1. O schema mesclado.
+    2. Uma string agregada de TODOS os textos de exemplo para esse label.
     """
-    logging.info("--- FASE 1: Pré-Scan e Mesclagem de Schemas ---")
-    merged_schemas_map = {}
+    logging.info("--- FASE 1: Pré-Scan, Mesclagem de Schemas e Agregação de Textos ---")
+    merged_data_map = {}
     
+    # Precisamos ler os textos dos PDFs primeiro
+    textos_por_path = {}
+    for item in batch_data:
+        pdf_path = item.get("pdf_path")
+        if pdf_path and pdf_path not in textos_por_path:
+            textos_por_path[pdf_path] = ler_texto_do_pdf(pdf_path)
+
     for item in batch_data:
         label = item.get("label")
         schema = item.get("extraction_schema")
+        pdf_path = item.get("pdf_path")
         
-        if not label or not schema:
-            logging.warning("Item no dataset sem 'label' ou 'extraction_schema'. Pulando.")
+        if not all([label, schema, pdf_path]):
+            logging.warning("Item no dataset sem 'label', 'schema' ou 'pdf_path'. Pulando.")
             continue
             
-        if label not in merged_schemas_map:
-            # Primeiro vez que vemos esse label, apenas copiamos o schema
-            merged_schemas_map[label] = schema.copy()
+        pdf_text = textos_por_path.get(pdf_path)
+        if not pdf_text:
+            logging.warning(f"Texto para {pdf_path} não encontrado. Pulando item.")
+            continue
+
+        if label not in merged_data_map:
+            # Primeira vez que vemos esse label
+            merged_data_map[label] = {
+                'schema': schema.copy(),
+                'text_examples': f"--- INÍCIO EXEMPLO ({pdf_path}) ---\n{pdf_text}\n--- FIM EXEMPLO ({pdf_path}) ---\n\n"
+            }
         else:
-            # Já vimos esse label, mesclamos os campos (chaves)
-            merged_schemas_map[label].update(schema)
+            # Já vimos esse label, mesclamos
+            merged_data_map[label]['schema'].update(schema)
+            # E concatenamos o texto do exemplo
+            merged_data_map[label]['text_examples'] += f"--- INÍCIO EXEMPLO ({pdf_path}) ---\n{pdf_text}\n--- FIM EXEMPLO ({pdf_path}) ---\n\n"
             
-    logging.info(f"Pré-Scan concluído. {len(merged_schemas_map)} schemas únicos mesclados.")
+    logging.info(f"Pré-Scan concluído. {len(merged_data_map)} labels únicos processados.")
     
-    # Log para depuração
-    for label, schema in merged_schemas_map.items():
-        logging.info(f"  Schema mesclado para '{label}': {len(schema)} campos únicos.")
+    for label, data in merged_data_map.items():
+        logging.info(f"  Label '{label}': {len(data['schema'])} campos únicos. {len(data['text_examples'])} caracteres de texto de exemplo.")
         
-    return merged_schemas_map
+    return merged_data_map
 
 #
 # --- NOVA FUNÇÃO (FASE 3: PROCESSAMENTO SERIAL) ---
 #
-def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
+def processar_batch_serial(batch_data: list, merged_data_map: dict):
     """
-    FASE 3: Processa o batch serialmente, item por item,
+    FASE 3 (V15): Processa o batch serialmente, item por item,
     lendo os PDFs reais.
     """
     logging.info("--- FASE 3: Iniciando Processamento Serial do Batch ---")
     
     start_time_total = time.time()
     resultados_finais = []
-    
-    # --- 3. REMOVER O DICIONÁRIO MOCKADO ---
-    # pdf_textos_mockados = { ... } (REMOVIDO)
 
     for i, item in enumerate(batch_data):
         logging.info(f"--- Processando Item {i+1}/{len(batch_data)} ---")
         item_label = item.get("label")
         item_schema = item.get("extraction_schema")
-        pdf_path = item.get("pdf_path") #
+        pdf_path = item.get("pdf_path")
         
-        # --- 4. LER O PDF REAL ---
-        pdf_text = ler_texto_do_pdf(pdf_path) 
+        pdf_text = ler_texto_do_pdf(pdf_path)
         
         if not all([item_label, item_schema, pdf_text]):
             logging.error(f"Item {i+1} inválido (label, schema ou texto do PDF ausente). Pulando.")
@@ -223,16 +241,17 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
             
         start_time_item = time.time()
         
-        # Chamamos o orquestrador V14
+        # Chamamos o orquestrador V15
         resultado = processar_extracao(
             label=item_label,
             item_schema=item_schema,
             pdf_text=pdf_text,
-            merged_schemas_map=merged_schemas_map
+            merged_data_map=merged_data_map # Passa o mapa completo
         )
         
         resultados_finais.append(resultado)
         
+        # ... (Resto da lógica de logging de tempo é idêntica) ...
         tempo_item = time.time() - start_time_item
         tempo_acumulado = time.time() - start_time_total
         limite_item_n = (i + 1) * 10.0 
@@ -247,7 +266,6 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
             logging.critical(f"Tempo Acumulado: {tempo_acumulado:.2f}s. Limite: {limite_item_n:.2f}s. ... FALHA NO REQUISITO DE TEMPO!")
 
     logging.info("--- Processamento do Batch Concluído ---")
-    # (O resto da função é idêntico)
     tempo_total = time.time() - start_time_total
     logging.info(f"Tempo total para {len(batch_data)} itens: {tempo_total:.2f}s")
     
@@ -287,18 +305,16 @@ def carregar_dataset(filepath="dataset.json") -> list:
 if __name__ == "__main__":
     logging.info("--- INICIANDO SIMULAÇÃO DE BATCH (V9 + V2.1) ---")
 
-    # 1. Limpa o cache para um teste limpo
-    # repo_para_limpar = ParserRepository()
-    # repo_para_limpar.limpar_cache_completo() # (Função que adicionamos)
+    #repo_para_limpar = ParserRepository()
+    #repo_para_limpar.limpar_cache_completo() 
 
-    # 2. Carrega os dados
     batch_data = carregar_dataset("dataset.json")
 
     if not batch_data:
         logging.error("Simulação interrompida. Dataset não pôde ser carregado.")
     else:
-        # --- FASE 1: PRÉ-SCAN ---
-        merged_schemas_map = pre_scan_e_mesclar_schemas(batch_data)
+        # --- FASE 1 (V15) ---
+        merged_data_map = pre_scan_e_agregar_dados(batch_data)
         
-        # --- FASE 3: PROCESSAMENTO SERIAL ---
-        processar_batch_serial(batch_data, merged_schemas_map)
+        # --- FASE 3 (V15) ---
+        processar_batch_serial(batch_data, merged_data_map)
