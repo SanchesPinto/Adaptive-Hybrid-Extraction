@@ -2,7 +2,8 @@ import logging
 import json 
 import os
 import threading
-import time # Usaremos para medir o tempo total
+import time 
+import fitz # PyMuPDF
 
 # --- Importando todos os nossos Módulos ---
 # (Sem alterações aqui)
@@ -17,6 +18,30 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 MIN_CONFIDENCE_THRESHOLD = 0.8 
 
+# --- NOVA FUNÇÃO HELPER ---
+def ler_texto_do_pdf(pdf_path: str) -> str | None:
+    """
+    Extrai o texto de um arquivo PDF usando PyMuPDF (fitz).
+    Assume que o PDF já tem texto (conforme ).
+    """
+    # Constrói o caminho completo, assumindo que a pasta 'files' está no mesmo nível
+    full_path = os.path.join("files", pdf_path) # (baseado na sua 'tree')
+    
+    if not os.path.exists(full_path):
+        logging.error(f"Arquivo PDF não encontrado em: {full_path}")
+        return None
+    
+    try:
+        with fitz.open(full_path) as doc:
+            texto_completo = ""
+            for page in doc:
+                # O desafio diz que cada PDF tem apenas uma página [cite: 20]
+                texto_completo += page.get_text()
+            return texto_completo
+    except Exception as e:
+        logging.error(f"Falha ao ler o PDF {full_path}: {e}")
+        return None
+
 #
 # --- MODIFICAÇÃO 1: Passamos a receber o 'merged_schema_map' ---
 #
@@ -26,7 +51,7 @@ def processar_extracao(label: str,
                        merged_schemas_map: dict):
     """
     Função principal do Orquestrador (Módulo 4), V2.1 + V9.
-    [CORRIGIDA com a lógica de Filtro-Primeiro]
+    [CORRIGIDA com a lógica de Confiança-Primeiro (V14)]
     """
     logging.info(f"Iniciando processamento (V2.1 Lock) para o label: {label}")
     
@@ -34,7 +59,7 @@ def processar_extracao(label: str,
     parser = repo.get_parser(label)
 
     if parser:
-        # --- CAMINHO 1: CACHE HIT (O "Caminho Rápido") [CORRIGIDO] ---
+        # --- CAMINHO 1: CACHE HIT (O "Caminho Rápido") [V14] ---
         logging.info("CACHE HIT. Acionando Módulo 2 (Executor)...")
         executor = ParserExecutor()
         
@@ -44,8 +69,17 @@ def processar_extracao(label: str,
         logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2 - Completo) ---")
         logging.info(json.dumps(extracted_data_COMPLETO, indent=2, ensure_ascii=False))
 
-        # 2. [A CORREÇÃO] Filtramos o resultado do parser PRIMEIRO
-        #    para conter APENAS o que o `item_schema` pediu.
+        # 2. [A CORREÇÃO V14] Buscamos o schema completo que o parser FOI 
+        #    TREINADO para extrair (o schema mesclado).
+        schema_COMPLETO = merged_schemas_map[label]
+
+        # 3. Calculamos a confiança no resultado COMPLETO.
+        #    Isso expõe TODAS as falhas do parser.
+        calculator = ConfidenceCalculator()
+        confidence = calculator.calculate_confidence(extracted_data_COMPLETO, schema_COMPLETO) #
+        
+        # 4. Agora filtramos os dados para o que o item pediu.
+        #    Este é o dado que retornaremos em caso de SUCESSO.
         extracted_data_FILTRADO = {
             k: extracted_data_COMPLETO.get(k) for k in item_schema.keys()
         }
@@ -53,15 +87,11 @@ def processar_extracao(label: str,
         logging.info("--- DADOS EXTRAÍDOS (Filtrado para este Item) ---")
         logging.info(json.dumps(extracted_data_FILTRADO, indent=2, ensure_ascii=False))
 
-        # 3. Agora calculamos a confiança no resultado FILTRADO.
-        calculator = ConfidenceCalculator()
-        confidence = calculator.calculate_confidence(extracted_data_FILTRADO, item_schema) #
-        
         if confidence >= MIN_CONFIDENCE_THRESHOLD:
-            logging.info(f"Confiança Alta ({confidence:.2f} >= {MIN_CONFIDENCE_THRESHOLD}). Retornando dados do Módulo 2.")
+            logging.info(f"Confiança Alta ({confidence:.2f} >= {MIN_CONFIDENCE_THRESHOLD}). Retornando dados do Módulo 2 (Filtrados).")
             return extracted_data_FILTRADO # Retorna os dados filtrados
         else:
-            # 4. O Fallback Otimizado agora opera sobre os dados já filtrados.
+            # 5. O Fallback Otimizado é acionado pela baixa confiança.
             logging.warning(f"Confiança Baixa ({confidence:.2f} < {MIN_CONFIDENCE_THRESHOLD}). Acionando Fallback Otimizado (Modo 2)...")
             fallback = FallbackExtractor() #
             
@@ -70,9 +100,9 @@ def processar_extracao(label: str,
                 if k not in extracted_data_FILTRADO or not extracted_data_FILTRADO[k]
             }
             if not campos_faltantes:
-                 return extracted_data_FILTRADO # Retorna o melhor que temos
+                 logging.warning("Confiança baixa em campos não solicitados. Retornando dados filtrados.")
+                 return extracted_data_FILTRADO 
 
-            # O contexto (partial_data) também deve ser o filtrado
             fallback_data = fallback.extract_missing(campos_faltantes, pdf_text, extracted_data_FILTRADO) #
             
             if fallback_data:
@@ -87,23 +117,22 @@ def processar_extracao(label: str,
         
         logging.warning(f"CACHE MISS para {label}. Verificando lock de geração...")
 
-        if repo.is_generation_locked(label): #
+        if repo.is_generation_locked(label):
             logging.warning(f"Geração para '{label}' já em progresso (lock encontrado). Pulando criação de nova thread.")
         else:
             logging.info(f"Lock não encontrado. Criando lock e disparando thread de geração...")
-            repo.create_lock(label) #
+            repo.create_lock(label)
 
             def _run_parser_generation_task():
                 task_repo = ParserRepository()
-                task_generator = ParserGenerator() #
+                task_generator = ParserGenerator()
                 try:
                     logging.info(f"[BACKGROUND] TAREFA INICIADA: Gerando parser para '{label}'...")
-                    
                     schema_completo_mesclado = merged_schemas_map[label]
-                    new_parser = task_generator.generate_parser(schema_completo_mesclado, pdf_text) #
+                    new_parser = task_generator.generate_parser(schema_completo_mesclado, pdf_text)
                     
                     if new_parser:
-                        task_repo.save_parser(label, new_parser) #
+                        task_repo.save_parser(label, new_parser)
                         logging.info(f"[BACKGROUND] TAREFA CONCLÍDA: Novo parser para '{label}' salvo.")
                     else:
                         logging.error(f"[BACKGROUND] TAREFA FALHOU: Módulo 1 falhou em gerar parser para '{label}'.")
@@ -112,16 +141,15 @@ def processar_extracao(label: str,
                     logging.error(f"[BACKGROUND] TAREFA CRASHOU: {e}")
                 finally:
                     logging.info(f"[BACKGROUND] Removendo lock para '{label}'...")
-                    task_repo.remove_lock(label) #
+                    task_repo.remove_lock(label)
 
             generation_thread = threading.Thread(target=_run_parser_generation_task)
             generation_thread.start() 
 
         logging.info("Executando Fallback Síncrono (Modo 1) para responder ao usuário...")
-        fallback = FallbackExtractor() #
+        fallback = FallbackExtractor()
         
-        # O Fallback Síncrono (Modo 1) já usa o item_schema, então está correto.
-        extracted_data = fallback.extract_all(item_schema, pdf_text) #
+        extracted_data = fallback.extract_all(item_schema, pdf_text)
         
         if not extracted_data:
             logging.error("Falha Síncrona: Fallback (Modo 1) também falhou.")
@@ -170,40 +198,32 @@ def pre_scan_e_mesclar_schemas(batch_data: list) -> dict:
 def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
     """
     FASE 3: Processa o batch serialmente, item por item,
-    passando o mapa de schemas mesclados para o orquestrador.
+    lendo os PDFs reais.
     """
     logging.info("--- FASE 3: Iniciando Processamento Serial do Batch ---")
     
     start_time_total = time.time()
     resultados_finais = []
     
-    # (Não estamos lendo o PDF real, então vamos usar um texto mockado
-    #  baseado no pdf_path, apenas para a simulação funcionar)
-    pdf_textos_mockados = {
-        "oab_1.pdf": "SON GOKU\nInscrição 101943\nSeccional PR\nSubseção CONSELHO SECCIONAL-PARANÁ\nSUPLEMENTAR\nSITUAÇÃO REGULAR",
-        "oab_2.pdf": "JOANA D'ARC\nInscrição 101943\nSeccional PR\nSubseção CONSELHO SECCIONAL-PARANA SUPLEMENTAR\nEndereco Profissional AVENIDA PAULISTA, N 2300\nSITUAÇÃO REGULAR",
-        "oab_3.pdf": "VEGETA\nInscrição 123456\nSeccional SP\nSubseção CAPITAL\nADVOGADO\nTelefone Profissional (11) 99999-9999\nSITUAÇÃO REGULAR",
-        "tela_sistema_1.pdf": "Data base 01/01/2025\nData verncimento 01/02/2025\nQuantidade parcelas 1\nProduto XYZ\nSistema XPTO\nTipo de operacao FINANC\nTipo de sistema INTERNO",
-        "tela_sistema_2.pdf": "Pesquisa por: Cliente\nPesquisa tipo: CPF\nSistema XPTO\nValor parcela 150,00\nCidade RIO DE JANEIRO",
-        "tela_sistema_3.pdf": "Data referencia 05/11/2025\nSeleção de parcelas: Pendente\nTotal de parcelas: 150,00",
-    }
+    # --- 3. REMOVER O DICIONÁRIO MOCKADO ---
+    # pdf_textos_mockados = { ... } (REMOVIDO)
 
     for i, item in enumerate(batch_data):
         logging.info(f"--- Processando Item {i+1}/{len(batch_data)} ---")
         item_label = item.get("label")
         item_schema = item.get("extraction_schema")
-        pdf_path = item.get("pdf_path")
+        pdf_path = item.get("pdf_path") #
         
-        # (Substituir pela leitura real do PDF quando integrarmos)
-        pdf_text = pdf_textos_mockados.get(pdf_path)
+        # --- 4. LER O PDF REAL ---
+        pdf_text = ler_texto_do_pdf(pdf_path) 
         
         if not all([item_label, item_schema, pdf_text]):
-            logging.error(f"Item {i+1} inválido (faltando label, schema ou texto). Pulando.")
+            logging.error(f"Item {i+1} inválido (label, schema ou texto do PDF ausente). Pulando.")
             continue
             
         start_time_item = time.time()
         
-        # Chamamos o orquestrador V2.1 + V9
+        # Chamamos o orquestrador V14
         resultado = processar_extracao(
             label=item_label,
             item_schema=item_schema,
@@ -215,7 +235,7 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
         
         tempo_item = time.time() - start_time_item
         tempo_acumulado = time.time() - start_time_total
-        limite_item_n = (i + 1) * 10.0 # O limite de tempo serial 
+        limite_item_n = (i + 1) * 10.0 
         
         logging.info(f"--- Item {i+1} Processado ---")
         logging.info(f"Dados Finais: {json.dumps(resultado, indent=2, ensure_ascii=False)}")
@@ -225,17 +245,15 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
             logging.info(f"Tempo Acumulado: {tempo_acumulado:.2f}s. Limite: {limite_item_n:.2f}s. ... OK.")
         else:
             logging.critical(f"Tempo Acumulado: {tempo_acumulado:.2f}s. Limite: {limite_item_n:.2f}s. ... FALHA NO REQUISITO DE TEMPO!")
-            # (Em um sistema real, poderíamos parar, mas aqui continuamos)
 
     logging.info("--- Processamento do Batch Concluído ---")
+    # (O resto da função é idêntico)
     tempo_total = time.time() - start_time_total
     logging.info(f"Tempo total para {len(batch_data)} itens: {tempo_total:.2f}s")
     
-    # (Aguardar threads de background para um shutdown limpo, se necessário)
     logging.info("Aguardando threads de geração pendentes (se houver)...")
-    # (Em um app real, isso seria gerenciado de forma mais robusta)
-    time.sleep(10) # Dá tempo para as últimas threads disparadas iniciarem
-    while threading.active_count() > 1: # Espera até que só a thread principal reste
+    time.sleep(10) 
+    while threading.active_count() > 1: 
         time.sleep(2)
     logging.info("Todas as threads concluídas. Simulação finalizada.")
 
