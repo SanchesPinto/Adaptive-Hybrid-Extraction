@@ -38,6 +38,7 @@ class FallbackExtractor:
         # O prompt muda se for uma extração completa ou apenas de campos faltantes
         if partial_data:
             # --- Prompt para Campos Faltantes (Otimizado) ---
+            logging.info(f"Realizando extração de campos faltantes...")
             partial_data_str = json.dumps(partial_data, indent=2, ensure_ascii=False)
             task_instruction = (
                 f"Sua tarefa é encontrar APENAS os campos definidos no `SCHEMA_FALTANTE` "
@@ -56,7 +57,8 @@ class FallbackExtractor:
                 ```
                 """     
         else: # --- Prompt para Extração Completa --- 
-            task_instruction = ( "Sua tarefa é extrair as informações do TEXTO_PDF " "e formatá-las de acordo com o EXTRACTION_SCHEMA." ) 
+            logging.info(f"Realizando extração completa...")
+            task_instruction = ( "Sua tarefa é extrair as informações do TEXTO_PDF " "e formatá-las de acordo com o EXTRACTION_SCHEMA, campos não encontrados podem ser preenchidos com null." ) 
             context_str = f"""
             ---
             EXTRACTION_SCHEMA:
@@ -71,14 +73,7 @@ class FallbackExtractor:
 
         
         {task_instruction} 
-        
-        REGRAS DE EXTRAÇÃO: 
-            1. Formato de Saída: Responda APENAS com um objeto JSON válido.
-
-            2. Chaves: As chaves do JSON de saída devem corresponder EXATAMENTE às chaves do schema solicitado.
-
-            3. Campos Não Encontrados: Se um campo solicitado não puder ser encontrado no texto, seu valor no JSON de saída deve ser null.
-        
+               
         {context_str}
         
         ---

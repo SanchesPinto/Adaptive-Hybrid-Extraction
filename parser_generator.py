@@ -1,20 +1,20 @@
 import os
 import json
 import logging
+import re # <-- Adicionado para a Regex de fallback
 from openai import OpenAI
 from dotenv import load_dotenv
-import re
+from typing import Optional # <-- Adicionado para clareza
 
-# Carrega as variáveis de ambiente (OPENAI_API_KEY) do arquivo .env
-# Isso permite que os.getenv("OPENAI_API_KEY") funcione.
+# Carrega as variáveis de ambiente (OPENAI_API_KEY)
 load_dotenv()
 
 class ParserGenerator:
     """
-    Implementa o "Módulo 1: Gerador de Parser" (Coração da Camada 3).
+    Implementa o "Módulo 1: Gerador de Parser" (V16).
     
-    Responsável por chamar o gpt-5 mini com um prompt específico
-    para gerar um parser Regex a partir de um schema e um exemplo de texto.
+    Agora usa um exemplo de JSON "correto" (do Fallback) para
+    fazer a engenharia reversa das Regex.
     """
     
     def __init__(self):
@@ -27,57 +27,75 @@ class ParserGenerator:
             raise ValueError("API key da OpenAI não configurada.")
             
         self.client = OpenAI(api_key=api_key)
-        # O modelo exato exigido pelo desafio
         self.model = "gpt-5-mini" 
         
-    def _build_prompt(self, schema: dict, pdf_texts_aggregate: str) -> str:
+    def _build_prompt(self, 
+                      schema: dict, 
+                      pdf_text: str, 
+                      correct_json_example: dict) -> str:
         """
-        Monta o prompt final (V15) com base no schema mesclado
-        e nos MÚLTIPLOS textos de exemplo agregados.
+        Monta o prompt final (V16) com base no schema mesclado,
+        UM texto de exemplo, e o JSON "gabarito" extraído dele.
         """
         
         schema_str = json.dumps(schema, indent=2, ensure_ascii=False)
+        json_example_str = json.dumps(correct_json_example, indent=2, ensure_ascii=False)
         
-        # O template do prompt V15
+        # O template do prompt V16
         prompt_template = f"""
-Você é um programador de elite, especialista em criar Expressões Regulares (Regex) robustas em Python.
+Você é um motor de engenharia reversa. Sua especialidade é criar Expressões Regulares (Regex) em Python.
 
-Sua tarefa é gerar um PARSER. Você receberá um `extraction_schema` (JSON) e um conjunto de `textos_de_exemplo` (strings).
+Sua tarefa é gerar um PARSER. Você receberá:
+1.  `EXTRACTION_SCHEMA`: O schema JSON completo que o parser deve ser capaz de extrair.
+2.  `TEXTO_PDF_EXEMPLO`: Um texto de exemplo.
+3.  `JSON_DE_GABARITO`: O JSON que foi extraído com SUCESSO do `TEXTO_PDF_EXEMPLO` (provavelmente por um humano ou outro LLM).
 
-Seu objetivo é criar um conjunto de expressões Regex em Python para extrair CADA campo definido no `extraction_schema`.
+Seu objetivo é gerar as Regex que mapeiam o `TEXTO_PDF_EXEMPLO` ao `JSON_DE_GABARITO`.
 
 REGRAS DE GERAÇÃO:
-1.  **Generalização:** Os `textos_de_exemplo` mostram diferentes layouts e campos para o mesmo label. Sua Regex deve ser robusta o suficiente para funcionar em TODOS os exemplos.
-2.  **Robustez:** A Regex deve ser resiliente a espaços em branco extras (`\\s*`), quebras de linha (`\\n`), e variações de caixa (use `(?i)` para case-insensitive onde apropriado). Use grupos de captura (parênteses `()`) para isolar o valor exato.
-3.  **Campos Opcionais:** Se um campo (ex: "telefone_profissional") aparece em um exemplo mas não em outro, a Regex gerada para ele deve ser *opcional* (ex: não falhar se não encontrar).
-4.  **Formato de Saída:** Responda APENAS com um objeto JSON válido. As chaves devem ser EXATAMENTE as chaves do `extraction_schema` de entrada. Os valores devem ser a STRING da Regex.
-5.  **NÃO GERE `null`:** Se um campo do schema não for encontrado em NENHUM exemplo, gere a melhor Regex possível que você puder inferir (ex: `(?i)NomeDoCampo\\s*[:\\-]?\\s*(.*)`), mas NÃO retorne `null`.
+1.  **Mapeamento Direto:** Para cada campo no `JSON_DE_GABARITO` que NÃO seja `null` (ex: "nome": "SON GOKU"), crie uma Regex robusta que encontre o rótulo (ex: "Nome") e capture o valor (ex: "SON GOKU") do `TEXTO_PDF_EXEMPLO`.
+2.  **Generalização de Campos `null`:** O `JSON_DE_GABARITO` pode ter campos `null` (ex: "telefone_profissional": null). Isso significa que o gabarito falhou em encontrar esse campo.
+3.  **REGRA CRÍTICA (Campos `null`):** Para qualquer campo que seja `null` no `JSON_DE_GABARITO`, você DEVE consultar o `EXTRACTION_SCHEMA` e gerar uma Regex genérica baseada no *nome* da chave (ex: `(?i)telefone_profissional\\s*[:\\-]?\\s*([^\\n\\r]+)`).
+4.  **NÃO GERE `null`:** A saída JSON final NUNCA deve conter `null` como valor. Gere uma Regex para CADA chave no `EXTRACTION_SCHEMA`.
+5.  **Formato de Saída:** Responda APENAS com um objeto JSON válido. As chaves devem ser EXATAMENTE as chaves do `EXTRACTION_SCHEMA` de entrada. Os valores devem ser a STRING da Regex.
 
 ---
-INPUT: EXTRACTION SCHEMA (COMPLETO E MESCLADO)
+INPUT 1: EXTRACTION SCHEMA (O schema completo que o parser deve ter)
 ```json
 {schema_str}
 ```
 ```Plaintext
-{pdf_texts_aggregate}
+{pdf_text}
 ```
+INPUT 3: JSON_DE_GABARITO (A "resposta correta" para o texto acima)
+```json
+{json_example_str}
+```
+
 OUTPUT: JSON (APENAS O JSON, SEM nulls NOS VALORES) 
 """ 
 
         return prompt_template.strip()
 
-    def generate_parser(self, schema: dict, pdf_texts_aggregate: str) -> dict | None:
+    def generate_parser(self, 
+                    schema: dict, 
+                    pdf_text: str, 
+                    correct_json_example: dict) -> Optional[dict]:
         """
-        Chama a API do gpt-5 mini para gerar o parser.
+        Chama a API do gpt-5 mini para gerar o parser (V16).
         
-        Retorna um dicionário (o parser) em caso de sucesso, ou None em caso de falha.
+        Args:
+            schema: O schema mesclado completo (ex: 14 campos).
+            pdf_text: O texto do primeiro item (ex: Item 4).
+            correct_json_example: O JSON extraído pelo Fallback (ex: 7 campos).
+            
+        Returns:
+            Um dicionário (o parser) em caso de sucesso, ou None em caso de falha.
         """
-        
-        # 2. O nome do parâmetro mudou para clareza
-        prompt = self._build_prompt(schema, pdf_texts_aggregate)
+        prompt = self._build_prompt(schema, pdf_text, correct_json_example)
         
         try:
-            logging.info(f"Chamando {self.model} para gerar parser (com textos agregados)...")
+            logging.info(f"Chamando {self.model} para gerar parser (com gabarito V16)...")
             
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -86,7 +104,7 @@ OUTPUT: JSON (APENAS O JSON, SEM nulls NOS VALORES)
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"}, 
-                # temperature=0.0 # (Manter em 0 para consistência)
+                # temperature=0.0 
             )
             
             response_content = response.choices[0].message.content
@@ -94,13 +112,13 @@ OUTPUT: JSON (APENAS O JSON, SEM nulls NOS VALORES)
             parser_dict = json.loads(response_content)
             
             # Verificação final para garantir que ele não gerou 'null'
+            # (A Regra 3 do prompt V16 já lida com isso, mas é uma boa garantia)
             for key, value in parser_dict.items():
                 if value is None:
-                    logging.warning(f"O LLM ignorou a regra e gerou 'null' para {key}. Corrigindo.")
-                    # Gera uma Regex "burra" como fallback final
+                    logging.warning(f"O LLM (V16) ignorou a regra e gerou 'null' para {key}. Corrigindo.")
                     parser_dict[key] = f"(?i){re.escape(key)}\\s*[:\\-]?\\s*([^\\n\\r]+)"
 
-            logging.info(f"Parser (V15) gerado com sucesso pelo {self.model}.")
+            logging.info(f"Parser (V16) gerado com sucesso pelo {self.model}.")
             return parser_dict
             
         except json.JSONDecodeError as e:
@@ -110,3 +128,6 @@ OUTPUT: JSON (APENAS O JSON, SEM nulls NOS VALORES)
         except Exception as e:
             logging.error(f"Erro ao chamar a API OpenAI: {e}")
             return None
+        
+
+        
