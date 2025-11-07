@@ -23,6 +23,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 MIN_CONFIDENCE_THRESHOLD = 0.8 
 
+
+HEURISTIC_FAILURE_THRESHOLD = 0.7 # Aciona LLM se 50% ou mais dos campos forem null
+
 LLM_TIMEOUT_SECONDS = 9.9 # Nosso timeout global
 
 def _run_llm_extract_missing_in_thread(queue: Queue, 
@@ -149,20 +152,36 @@ def processar_extracao(label: str,
                        item_schema: dict, 
                        pdf_text: str,
                        merged_schemas_map: dict,
-                       item_index: int, # NOVO: O índice do item (ex: 0, 1, 2...)
-                       batch_start_time: float # NOVO: O time.time() de início do lote
-                       ) -> tuple[dict, float]: # Retorna os dados E o tempo do item
+                       item_index: int, 
+                       batch_start_time: float
+                       ) -> tuple[dict, float]:
     """
-    Orquestrador V21.1
-    (V18.2 + Gerador V19.2 + Watchdog CUMULATIVO V21.1)
+    Orquestrador V21.2 (Heuristic-First Síncrono)
+    
+    Testa a hipótese: O 'Cache Miss' agora valida a heurística
+    e pode acionar o LLM 'extract_missing' síncronamente.
     """
-    logging.info(f"Iniciando processamento (V21.1) para o label: {label}")
+    logging.info(f"Iniciando processamento (V21.2) para o label: {label}")
     start_time_item = time.time() # Início do processamento deste item
     
     bundle = REPO.get_parser(label)
 
+    # --- CÁLCULO DE TIMEOUT CUMULATIVO (Definido antecipadamente) ---
+    # O orçamento de tempo total para ESTE item é (item_index + 1) * 10.0 segundos.
+    absolute_deadline = batch_start_time + (item_index + 1) * 10.0
+    
+    # O tempo restante que temos é o deadline menos o tempo atual
+    current_time = time.time()
+    time_remaining = absolute_deadline - current_time
+    
+    # Deixar um buffer de segurança (ex: 0.5s)
+    safety_buffer = 0.5
+    timeout_budget = max(0.1, time_remaining - safety_buffer) 
+    # ----------------------------------------
+
     if bundle:
-        # --- CAMINHO 2: CACHE HIT (V21.1) ---
+        # --- CAMINHO 2: CACHE HIT (V21.2) ---
+        # (Esta lógica é idêntica à V21.1)
         logging.info("CACHE HIT (V21). Acionando Módulo 2 (Executor)...")
         
         parser_rules = bundle.get("parser", {})
@@ -170,7 +189,7 @@ def processar_extracao(label: str,
         
         extracted_data = EXECUTOR.execute_parser(parser_rules, pdf_text)
         
-        logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2 - Parser V21) ---")
+        logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2) ---")
         logging.info(json.dumps(extracted_data, indent=2, ensure_ascii=False))
 
         confidence = CALCULATOR.calculate_confidence(extracted_data, validation_rules)
@@ -180,10 +199,10 @@ def processar_extracao(label: str,
         }
 
         if confidence >= MIN_CONFIDENCE_THRESHOLD:
-            logging.info(f"Confiança Alta ({confidence:.2f}). Retornando dados do Parser V21.")
+            logging.info(f"Confiança Alta ({confidence:.2f}). Retornando dados do Parser.")
             return final_data, (time.time() - start_time_item)
         else:
-            # MÓDULO 4 (V21.1) - Fallback Otimizado com WATCHDOG CUMULATIVO
+            # MÓDULO 4 (V21.2) - Fallback Otimizado com WATCHDOG CUMULATIVO
             logging.warning(f"Confiança Baixa ({confidence:.2f}). Acionando Fallback Otimizado (Modo 2)...")
             
             campos_faltantes = {
@@ -193,31 +212,16 @@ def processar_extracao(label: str,
             if not campos_faltantes:
                  return final_data, (time.time() - start_time_item)
 
-            # --- LÓGICA DO WATCHDOG V21.1 (CUMULATIVO) ---
             q = Queue()
             llm_thread = threading.Thread(
                 target=_run_llm_extract_missing_in_thread,
                 args=(q, campos_faltantes, pdf_text, final_data)
             )
             
-            # --- CÁLCULO DE TIMEOUT CUMULATIVO ---
-            # O item atual é (item_index + 1). Ex: item 0 é o 1º item.
-            # O orçamento de tempo total para ESTE item é (item_index + 1) * 10.0 segundos.
-            absolute_deadline = batch_start_time + (item_index + 1) * 10.0
-            
-            # O tempo restante que temos é o deadline menos o tempo atual
-            current_time = time.time()
-            time_remaining = absolute_deadline - current_time
-            
-            # Deixar um buffer de segurança (ex: 0.5s)
-            safety_buffer = 0.5
-            timeout_budget = max(0.1, time_remaining - safety_buffer) 
-            # ----------------------------------------
-            
             llm_thread.start()
             
             try:
-                logging.info(f"Tentando extração LLM 'missing' com timeout CUMULATIVO de {timeout_budget:.2f}s...")
+                logging.info(f"Tentando extração LLM 'missing' (Cache Hit) com timeout CUMULATIVO de {timeout_budget:.2f}s...")
                 fallback_data = q.get(timeout=timeout_budget)
                 llm_thread.join()
                 
@@ -233,29 +237,69 @@ def processar_extracao(label: str,
             return final_data, (time.time() - start_time_item)
     
     else:
-        # --- CAMINHO 1: CACHE MISS (V21.1) ---
-        logging.warning(f"CACHE MISS (V21) para {label}. Verificando lock...")
+        # --- CAMINHO 1: CACHE MISS (V21.2) - LÓGICA MODIFICADA ---
+        logging.warning(f"CACHE MISS (V21) para {label}. Executando heurística V18.3...")
         
-        logging.info("Executando Fallback Síncrono Local (Heurístico V18.3)...")
-        heuristic_data = HEURISTIC_FALLBACK.extract(pdf_text, item_schema)
+        # 1. Executa Heurística (Rápida)
+        heuristic_data = HEURISTIC_FALLBACK.extract(pdf_text, item_schema) #
         
+        # 2. Inicia a Geração de Conhecimento (Background)
+        # (Isto não mudou, ainda queremos acumular conhecimento)
         if not REPO.is_generation_locked(label):
             logging.info(f"Disparando thread de geração de pacote V21 (Híbrido)...")
             REPO.create_lock(label)
-            
             generation_thread = threading.Thread(
                 target=_run_parser_generation_task,
-                args=(
-                    label,
-                    merged_schemas_map[label], 
-                    pdf_text
-                )
+                args=(label, merged_schemas_map[label], pdf_text)
             )
             generation_thread.start() 
         else:
             logging.warning(f"Geração para '{label}' já em progresso. Pulando.")
 
-        logging.info("Retornando dados do Fallback Heurístico (V18.3) ao usuário.")
+        # 3. Validação da Heurística (Síncrona)
+        null_count = 0
+        for field in item_schema:
+            if heuristic_data.get(field) is None:
+                null_count += 1
+        
+        failure_rate = null_count / len(item_schema)
+        
+        # 4. Decisão: Retornar ou Acionar LLM
+        if failure_rate < HEURISTIC_FAILURE_THRESHOLD:
+            # Caminho Rápido (Cache Miss) - Sucesso Heurístico
+            logging.info(f"Sucesso Heurístico (Cache Miss)! (Taxa de falha: {failure_rate:.0%}).")
+            return heuristic_data, (time.time() - start_time_item)
+            
+        # 5. Fallback de LLM Síncrono (Cache Miss) - Hipótese do Usuário
+        logging.warning(f"Falha Heurística (Cache Miss) (Taxa: {failure_rate:.0%}). Acionando LLM com timeout...")
+        
+        q = Queue()
+        campos_faltantes = {
+            k: v for k, v in item_schema.items() 
+            if k not in heuristic_data or not heuristic_data[k]
+        }
+        
+        llm_thread = threading.Thread(
+            target=_run_llm_extract_missing_in_thread,
+            args=(q, campos_faltantes, pdf_text, heuristic_data) # Passa heuristic_data como contexto
+        )
+        
+        llm_thread.start()
+        
+        try:
+            logging.info(f"Tentando extração LLM 'missing' (Cache Miss) com timeout CUMULATIVO de {timeout_budget:.2f}s...")
+            fallback_data = q.get(timeout=timeout_budget)
+            llm_thread.join()
+            
+            if fallback_data:
+                logging.info("Sucesso no Fallback LLM (Cache Miss).")
+                heuristic_data.update(fallback_data)
+            else:
+                logging.warning("Fallback LLM (Cache Miss) falhou. Retornando dados heurísticos...")
+                
+        except: # (Timeout)
+            logging.critical(f"TIMEOUT CUMULATIVO DE {timeout_budget:.2f}s ATINGIDO (Cache Miss)! Retornando dados heurísticos.")
+        
         return heuristic_data, (time.time() - start_time_item)
 
 #
