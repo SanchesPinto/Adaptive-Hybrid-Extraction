@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import fitz 
+from queue import Queue
 
 # --- Importando todos os nossos Módulos V18.2 ---
 from parser_repository import ParserRepository         # (V16 - Mantido)
@@ -21,6 +22,24 @@ from heuristic_extractor import HeuristicExtractor     # (V18.1 - Mantido)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 MIN_CONFIDENCE_THRESHOLD = 0.8 
+
+LLM_TIMEOUT_SECONDS = 9.9 # Nosso timeout global
+
+def _run_llm_extract_missing_in_thread(queue: Queue, 
+                                       missing_schema: dict, 
+                                       pdf_text: str, 
+                                       partial_data: dict):
+    """
+    Executa o 'extract_missing' (Modo 2) em uma thread
+    para podermos aplicar o timeout.
+    """
+    try:
+        # FALLBACK é o nosso singleton FallbackExtractor
+        result = FALLBACK.extract_missing(missing_schema, pdf_text, partial_data)
+        queue.put(result)
+    except Exception as e:
+        logging.error(f"THREAD LLM (extract_missing) FALHOU: {e}")
+        queue.put(None) # Sinaliza falha
 
 # --- CARREGAMENTO SINGLETON DOS MÓDULOS ---
 try:
@@ -129,29 +148,31 @@ def pre_scan_e_mesclar_schemas(batch_data: list) -> dict:
 def processar_extracao(label: str, 
                        item_schema: dict, 
                        pdf_text: str,
-                       merged_schemas_map: dict):
+                       merged_schemas_map: dict,
+                       item_index: int, # NOVO: O índice do item (ex: 0, 1, 2...)
+                       batch_start_time: float # NOVO: O time.time() de início do lote
+                       ) -> tuple[dict, float]: # Retorna os dados E o tempo do item
     """
-    Orquestrador V18.2
-    A lógica síncrona é IDÊNTICA à V18.1.
+    Orquestrador V21.1
+    (V18.2 + Gerador V19.2 + Watchdog CUMULATIVO V21.1)
     """
-    logging.info(f"Iniciando processamento (V18.2) para o label: {label}")
+    logging.info(f"Iniciando processamento (V21.1) para o label: {label}")
+    start_time_item = time.time() # Início do processamento deste item
     
     bundle = REPO.get_parser(label)
 
     if bundle:
-        # --- CAMINHO 2: CACHE HIT (V18.2) ---
-        logging.info("CACHE HIT (V18). Acionando Módulo 2 (Executor)...")
+        # --- CAMINHO 2: CACHE HIT (V21.1) ---
+        logging.info("CACHE HIT (V21). Acionando Módulo 2 (Executor)...")
         
         parser_rules = bundle.get("parser", {})
         validation_rules = bundle.get("validation_rules", {})
         
-        # MÓDULO 2 (V16)
         extracted_data = EXECUTOR.execute_parser(parser_rules, pdf_text)
         
-        logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2 - Parser V18) ---")
+        logging.info("--- DADOS EXTRAÍDOS (Resultado Módulo 2 - Parser V21) ---")
         logging.info(json.dumps(extracted_data, indent=2, ensure_ascii=False))
 
-        # MÓDULO 3 (V18)
         confidence = CALCULATOR.calculate_confidence(extracted_data, validation_rules)
 
         final_data = {
@@ -159,10 +180,10 @@ def processar_extracao(label: str,
         }
 
         if confidence >= MIN_CONFIDENCE_THRESHOLD:
-            logging.info(f"Confiança Alta ({confidence:.2f}). Retornando dados do Parser V18.")
-            return final_data
+            logging.info(f"Confiança Alta ({confidence:.2f}). Retornando dados do Parser V21.")
+            return final_data, (time.time() - start_time_item)
         else:
-            # MÓDULO 4 (V16)
+            # MÓDULO 4 (V21.1) - Fallback Otimizado com WATCHDOG CUMULATIVO
             logging.warning(f"Confiança Baixa ({confidence:.2f}). Acionando Fallback Otimizado (Modo 2)...")
             
             campos_faltantes = {
@@ -170,43 +191,72 @@ def processar_extracao(label: str,
                 if k not in final_data or not final_data[k]
             }
             if not campos_faltantes:
-                 return final_data 
+                 return final_data, (time.time() - start_time_item)
 
-            fallback_data = FALLBACK.extract_missing(campos_faltantes, pdf_text, final_data)
+            # --- LÓGICA DO WATCHDOG V21.1 (CUMULATIVO) ---
+            q = Queue()
+            llm_thread = threading.Thread(
+                target=_run_llm_extract_missing_in_thread,
+                args=(q, campos_faltantes, pdf_text, final_data)
+            )
             
-            if fallback_data:
-                final_data.update(fallback_data)
-            return final_data
+            # --- CÁLCULO DE TIMEOUT CUMULATIVO ---
+            # O item atual é (item_index + 1). Ex: item 0 é o 1º item.
+            # O orçamento de tempo total para ESTE item é (item_index + 1) * 10.0 segundos.
+            absolute_deadline = batch_start_time + (item_index + 1) * 10.0
+            
+            # O tempo restante que temos é o deadline menos o tempo atual
+            current_time = time.time()
+            time_remaining = absolute_deadline - current_time
+            
+            # Deixar um buffer de segurança (ex: 0.5s)
+            safety_buffer = 0.5
+            timeout_budget = max(0.1, time_remaining - safety_buffer) 
+            # ----------------------------------------
+            
+            llm_thread.start()
+            
+            try:
+                logging.info(f"Tentando extração LLM 'missing' com timeout CUMULATIVO de {timeout_budget:.2f}s...")
+                fallback_data = q.get(timeout=timeout_budget)
+                llm_thread.join()
+                
+                if fallback_data:
+                    logging.info("Sucesso no Fallback LLM (Modo 2).")
+                    final_data.update(fallback_data)
+                else:
+                    logging.warning("Fallback LLM (Modo 2) falhou. Retornando dados parciais.")
+                    
+            except: # (Timeout)
+                logging.critical(f"TIMEOUT CUMULATIVO DE {timeout_budget:.2f}s ATINGIDO no Modo 2! Retornando dados parciais.")
+            
+            return final_data, (time.time() - start_time_item)
     
     else:
-        # --- CAMINHO 1: CACHE MISS (V18.2) ---
-        logging.warning(f"CACHE MISS (V18) para {label}. Verificando lock...")
+        # --- CAMINHO 1: CACHE MISS (V21.1) ---
+        logging.warning(f"CACHE MISS (V21) para {label}. Verificando lock...")
         
-        # 1. TAREFA SÍNCRONA (Foreground) - Foco no TEMPO
-        logging.info("Executando Fallback Síncrono Local (Heurístico V18.1)...")
+        logging.info("Executando Fallback Síncrono Local (Heurístico V18.3)...")
         heuristic_data = HEURISTIC_FALLBACK.extract(pdf_text, item_schema)
         
-        # 2. DISPARAR A THREAD DE BACKGROUND (se não estiver rodando)
         if not REPO.is_generation_locked(label):
-            logging.info(f"Disparando thread de geração de pacote V18.2...")
+            logging.info(f"Disparando thread de geração de pacote V21 (Híbrido)...")
             REPO.create_lock(label)
             
             generation_thread = threading.Thread(
                 target=_run_parser_generation_task,
                 args=(
                     label,
-                    merged_schemas_map[label], # Schema completo
-                    pdf_text                   # Texto do PDF
+                    merged_schemas_map[label], 
+                    pdf_text
                 )
             )
             generation_thread.start() 
         else:
             logging.warning(f"Geração para '{label}' já em progresso. Pulando.")
 
-        # 3. RETORNAR OS DADOS RÁPIDOS (Baixa Acurácia) IMEDIATAMENTE
-        logging.info("Retornando dados do Fallback Heurístico (V18.1) ao usuário.")
-        return heuristic_data
-
+        logging.info("Retornando dados do Fallback Heurístico (V18.3) ao usuário.")
+        return heuristic_data, (time.time() - start_time_item)
 
 #
 # --- (O resto do main.py (V18.1) é idêntico) ---
@@ -214,10 +264,10 @@ def processar_extracao(label: str,
 
 def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
     """
-    FASE 3 (V18.2): Processa o batch serialmente.
+    FASE 3 (V21.1): Processa o batch serialmente e passa os dados de tempo.
     """
-    logging.info("--- FASE 3: Iniciando Processamento Serial do Batch (V18.2) ---")
-    start_time_total = time.time()
+    logging.info("--- FASE 3: Iniciando Processamento Serial do Batch (V21.1) ---")
+    start_time_total = time.time() # O início do LOTE
 
     for i, item in enumerate(batch_data):
         logging.info(f"--- Processando Item {i+1}/{len(batch_data)} ---")
@@ -230,18 +280,19 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
         if not all([item_label, item_schema, pdf_text]):
             logging.error(f"Item {i+1} inválido. Pulando.")
             continue
-            
-        start_time_item = time.time()
         
-        resultado = processar_extracao(
+        # Chama a extração passando o índice (i) e o tempo de início do lote
+        resultado, tempo_item = processar_extracao(
             label=item_label,
             item_schema=item_schema,
             pdf_text=pdf_text,
-            merged_schemas_map=merged_schemas_map
+            merged_schemas_map=merged_schemas_map,
+            item_index=i, # Passa o índice
+            batch_start_time=start_time_total # Passa o tempo de início
         )
         
-        tempo_item = time.time() - start_time_item
         tempo_acumulado = time.time() - start_time_total
+        # O limite de tempo para ESTE ponto no lote
         limite_item_n = (i + 1) * 10.0 
         
         logging.info(f"--- Item {i+1} Processado ---")
@@ -258,10 +309,7 @@ def processar_batch_serial(batch_data: list, merged_schemas_map: dict):
     logging.info(f"Tempo total para {len(batch_data)} itens: {tempo_total:.2f}s")
     
     logging.info("Aguardando threads de geração pendentes (se houver)...")
-    time.sleep(10) 
-    while threading.active_count() > 1: 
-        time.sleep(2)
-    logging.info("Todas as threads concluídas. Simulação finalizada.")
+    # (Resto da sua lógica de thread)
 
 
 def carregar_dataset(filepath="dataset.json") -> list:
