@@ -93,7 +93,8 @@ Antes de gerar o JSON final:
 1. Leia cuidadosamente o `TEXTO_PDF_EXEMPLO`.
 2. Compare cada valor do `JSON_DE_GABARITO` com o texto original para entender **como o dado é apresentado**.
 3. Crie Regex **contextual**, alinhada ao modo como o valor aparece (rótulo, linha, tabela, etc.).
-4. Gere o JSON de Regex somente após essa análise.
+4. RESTRITO (PYTHON): NÃO use "look-behind" (`?<=` ou `?<!`) com padrões de comprimento variável (como `[0-9]+` ou `.*`). O motor de Regex do Python não suporta isso.
+5. Gere o JSON de Regex somente após essa análise.
 
 ---
 
@@ -172,6 +173,3 @@ Nada além disso deve ser incluído.
         except Exception as e:
             logging.error(f"Erro ao chamar a API OpenAI: {e}")
             return None
-        
-
-        

@@ -1,164 +1,115 @@
+# Módulo: confidence_calculator.py
+# (V18.3: Corrigido para iterar corretamente)
+
 import logging
 import re
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Any
 
 class ConfidenceCalculator:
     """
-    Implementa o "Módulo 3.1: O Sistema de Confiança Robusto" (V16.1).
+    Implementa o "Módulo 3: O Sistema de Confiança" (V18.3).
     
-    [cite_start]Substitui a verificação ingênua de "está preenchido?" [cite: 17, 21-22] por um
-    sistema de validação heurística por campo.
-    
-    Isso nos protege contra FALSOS POSITIVOS, onde o Módulo 2 (Regex)
-    retorna lixo (ex: "inscricao" = "Seccional").
+    Esta versão corrige o bug de lógica da V18,
+    garantindo que o loop 'for' itere sobre cada regra
+    individualmente, em vez de tratar o dicionário de regras
+    como um único item.
     """
 
-    def __init__(self):
-        # Cache de validadores para não precisar recriar as regras
-        self._validator_cache: Dict[str, Dict[str, Callable]] = {}
-        # Cache para dados cruzados (ex: 'nome' não pode ser igual a 'situacao')
-        self._cross_data_cache: Dict[str, Any] = {}
-
-    # --- REGEX DE VALIDAÇÃO GERAL ---
-    
-    def _is_numeric_like(self, value: str) -> bool:
-        """Verifica se o valor parece numérico e não é um rótulo."""
-        if not value: return False
-        # Verifica se contém um dígito E não é um rótulo conhecido
-        return bool(re.search(r'\d', value) and not self._is_generic_label(value))
-
-    def _is_generic_label(self, value: str) -> bool:
-        """Verifica se o valor é um rótulo genérico que vazou."""
-        if not value: return False
-        # Lista de rótulos comuns que podem vazar
-        return value.lower().strip() in ["seccional", "subseção", "inscrição", "nome", "situação regular"]
-
-    def _is_date(self, value: str) -> bool:
-        """Verifica se o valor parece uma data (formato DD/MM/YYYY)."""
-        if not value: return False
-        return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
-
-    def _is_in_enum(self, value: str, enum_list: list) -> bool:
-        """Verifica se o valor está numa lista de valores esperados (case-insensitive)."""
-        if not value: return False
-        return value.lower().strip() in enum_list
-    
-    def _is_not_empty_and_not_label(self, value: str) -> bool:
-        """Validador genérico: apenas não pode ser nulo ou um rótulo."""
-        if not value: return False
-        return not self._is_generic_label(value)
-
-    # --- VALIDADORES ESPECIALIZADOS POR LABEL ---
-
-    def _get_validation_rules(self, label: str) -> Dict[str, Callable]:
+    def _validate_rule(self, value: Optional[str], rule: Dict[str, Any]) -> bool:
         """
-        Factory que retorna o conjunto de regras de validação
-        correto para um determinado 'label'.
+        Executa uma regra de validação individual.
+        (Implementação stub - pode ser expandida)
         """
-        if label in self._validator_cache:
-            return self._validator_cache[label]
+        # 1. Checagem de Nulabilidade
+        is_nullable = rule.get("nullable", True)
+        if not value:
+            return is_nullable # Retorna True se for 'nullable', False se não for
 
-        rules = {}
-        if label == "carteira_oab":
-            rules = {
-                # Validação Cruzada: nome não pode ser igual a 'situacao'
-                "nome": lambda v: (
-                    self._is_not_empty_and_not_label(v) and len(v) > 2 and 
-                    v.lower().strip() != self._cross_data_cache.get("situacao", "").lower().strip()
-                ),
-                "inscricao": lambda v: self._is_numeric_like(v),
-                "seccional": lambda v: bool(v and len(v.strip()) == 2 and not v.strip().isdigit()), # Ex: "PR"
-                "subsecao": lambda v: self._is_not_empty_and_not_label(v) and len(v) > 5,
-                "categoria": lambda v: self._is_in_enum(v, ["advogado", "advogada", "suplementar", "estagiario", "estagiaria"]),
-                # Validação Cruzada: situacao não pode ser igual a 'nome'
-                "situacao": lambda v: (
-                    self._is_in_enum(v, ["situação regular"]) and 
-                    v.lower().strip() != self._cross_data_cache.get("nome", "").lower().strip()
-                )
-                # 'endereco' e 'telefone' são muito variáveis, 
-                # a checagem padrão (não nulo) será aplicada.
-            }
+        # 2. Checagens de Tipo e Formato
+        rule_type = rule.get("type")
         
-        elif label == "tela_sistema":
-            rules = {
-                "data_base": lambda v: self._is_date(v),
-                "data_verncimento": lambda v: self._is_date(v),
-                "valor_parcela": lambda v: bool(v and re.search(r'[\d.,]', v)),
-                "cidade": lambda v: bool(v and len(v) > 3),
-                "data_referencia": lambda v: self._is_date(v)
-            }
-        
-        # Cache para performance
-        self._validator_cache[label] = rules
-        return rules
+        try:
+            if rule_type == "string":
+                if "min_length" in rule and len(value) < rule["min_length"]:
+                    return False
+                if "max_length" in rule and len(value) > rule["max_length"]:
+                    return False
+                if "length" in rule and len(value) != rule["length"]:
+                    return False
+                if "pattern" in rule and not re.match(rule["pattern"], value):
+                    return False
+            
+            elif rule_type == "integer":
+                if not value.isdigit():
+                    return False
+                if "minimum" in rule and int(value) < rule["minimum"]:
+                    return False
+            
+            elif rule_type == "date":
+                if "format" in rule and rule["format"] == "dd/mm/yyyy":
+                    if not re.match(r'^\d{2}/\d{2}/\d{4}$', value):
+                        return False
+            
+            elif rule_type == "enum":
+                if value.lower().strip() not in [v.lower() for v in rule.get("values", [])]:
+                    return False
 
-    # --- MÉTODO PRINCIPAL ---
+        except Exception as e:
+            logging.warning(f"CONF (V18.3): Erro ao processar regra '{rule}' para valor '{value}': {e}")
+            return False
+            
+        return True # Passou em todas as validações
 
     def calculate_confidence(self, 
                              extracted_data: Dict[str, Optional[str]], 
-                             schema_to_validate: Dict[str, str], # Recebe o schema_COMPLETO
-                             label: str) -> float:
+                             validation_rules: Dict[str, Any]) -> float:
         """
-        Calcula um score de confiança baseado em regras de validação V16.1.
+        Calcula um score de confiança baseado nas regras V18.3.
         
         Args:
             extracted_data: Os dados retornados pelo Módulo 2 (ParserExecutor).
-            schema_to_validate: O schema completo (merged_schema) a ser validado.
-            label: O label do item (ex: 'carteira_oab') para carregar as regras.
+            validation_rules: O dict de regras (ex: {"nome": ..., "inscricao": ...}).
                               
         Returns:
             Um score de 0.0 a 1.0.
         """
         
-        if not schema_to_validate:
-            logging.warning("Schema de validação está vazio. Retornando confiança 0.0")
+        if not validation_rules:
+            logging.warning("CONF (V18.3): Não há regras de validação. Retornando 0.0")
             return 0.0
+        
+        # *** CORREÇÃO DO BUG (Início) ***
+        # O log mostrou que 'validation_rules' podia
+        # ser um dict aninhado: {"validation_rules": {...}}.
+        # Esta lógica defensiva garante que peguemos o dict interno.
+        if "validation_rules" in validation_rules and isinstance(validation_rules["validation_rules"], dict):
+            logging.debug("CONF (V18.3): Detectado dict aninhado. Usando regras internas.")
+            rules_to_validate = validation_rules["validation_rules"]
+        else:
+            rules_to_validate = validation_rules
+        
+        if not rules_to_validate:
+             logging.warning("CONF (V18.3): Dicionário de regras de validação está vazio. Retornando 0.0")
+             return 0.0
+        # *** CORREÇÃO DO BUG (Fim) ***
 
-        total_fields_in_schema = len(schema_to_validate)
+        total_fields_with_rules = len(rules_to_validate)
         validated_fields = 0
         
-        logging.info("Iniciando Módulo 3.1: Cálculo de Confiança Robusto...")
-        
-        # Pega as regras de validação para este label
-        validation_rules = self._get_validation_rules(label)
-        
-        # Preenche o cache de dados cruzados para as regras usarem
-        self._cross_data_cache['nome'] = extracted_data.get('nome')
-        self._cross_data_cache['situacao'] = extracted_data.get('situacao')
+        logging.info("Iniciando Módulo 3 (ConfidenceCalculator V18.3)...")
 
-        for field_name in schema_to_validate.keys():
+        # Itera sobre as REGRAS, não sobre os dados
+        for field_name, rule in rules_to_validate.items():
             value = extracted_data.get(field_name)
-
-            # 1. O campo está vazio?
-            if not value:
-                logging.warning(f"Confiança: Campo '{field_name}' está ausente ou vazio.")
-                continue # Vai para o próximo loop, não conta como validado
-
-            # 2. Existe uma regra de validação específica para ele?
-            validator = validation_rules.get(field_name)
             
-            if validator:
-                # 3. Se sim, execute a regra
-                try:
-                    if validator(value):
-                        validated_fields += 1 # SUCESSO!
-                    else:
-                        # REGRA FALHOU! (Ex: "inscricao" = "Seccional")
-                        logging.warning(f"Confiança: Campo '{field_name}' falhou na validação. Valor: '{value}'")
-                except Exception as e:
-                    logging.error(f"Confiança: Erro ao executar validador para {field_name}: {e}")
-            else:
-                # 4. Se não há regra, contamos como válido (confiança ingênua)
-                #    (Ex: para 'endereco_profissional' que não tem regra)
+            if self._validate_rule(value, rule):
                 validated_fields += 1
+            else:
+                logging.warning(f"CONF (V18.3): Campo '{field_name}' falhou na validação. Valor: '{value}', Regra: {rule}")
 
-        # Limpa o cache
-        self._cross_data_cache = {}
+        confidence_score = validated_fields / total_fields_with_rules
         
-        # Calcula o score final
-        confidence_score = validated_fields / total_fields_in_schema
-        
-        logging.info(f"Módulo 3.1: {validated_fields} de {total_fields_in_schema} campos VALIDADOS.")
-        logging.info(f"Módulo 3.1: Score de Confiança Final = {confidence_score:.2f}")
+        logging.info(f"Módulo 3 (V18.3): {validated_fields} de {total_fields_with_rules} campos VALIDADOS.")
+        logging.info(f"Módulo 3 (V18.3): Score de Confiança Final = {confidence_score:.2f}")
         
         return confidence_score
