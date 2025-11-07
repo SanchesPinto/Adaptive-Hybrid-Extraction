@@ -67,7 +67,7 @@ def processar_extracao(label: str,
         schema_COMPLETO = merged_schemas_map[label] # [V14]
 
         calculator = ConfidenceCalculator()
-        confidence = calculator.calculate_confidence(extracted_data_COMPLETO, schema_COMPLETO)
+        confidence = calculator.calculate_confidence(extracted_data_COMPLETO, schema_COMPLETO, label)
         
         extracted_data_FILTRADO = {
             k: extracted_data_COMPLETO.get(k) for k in item_schema.keys()
@@ -298,8 +298,8 @@ def carregar_dataset(filepath="dataset.json") -> list:
 if __name__ == "__main__":
     logging.info("--- INICIANDO SIMULAÇÃO DE BATCH (V9 + V2.1) ---")
 
-    repo_para_limpar = ParserRepository()
-    repo_para_limpar.limpar_cache_completo() 
+    #repo_para_limpar = ParserRepository()
+    #repo_para_limpar.limpar_cache_completo()
 
 
     batch_data = carregar_dataset("dataset.json")
